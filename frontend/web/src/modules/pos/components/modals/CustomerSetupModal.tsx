@@ -170,8 +170,10 @@ export function CustomerSetupModal({
                 value={form.phone}
                 disabled={busy}
                 inputMode="numeric"
+                maxLength={11}
                 onChange={(e) => {
-                  setForm({ ...form, phone: e.target.value.replace(/\D/g, '') });
+                  const digits = e.target.value.replace(/\D/g, '').slice(0, 11);
+                  setForm({ ...form, phone: digits });
                   if (errors.phone) setErrors((prev) => ({ ...prev, phone: undefined, form: undefined }));
                 }}
                 onKeyDown={(e) => focusNextOnEnter(e, () => addressRef.current?.focus())}

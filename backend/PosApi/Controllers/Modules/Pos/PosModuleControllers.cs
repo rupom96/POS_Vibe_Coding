@@ -266,9 +266,11 @@ public class PosController(IPosService posService) : ControllerBase
     public async Task<ActionResult<InvoicePrintContextDto>> GetInvoicePrintContext(
         string invoiceNo,
         [FromQuery] long companyId,
-        [FromQuery] long locationId)
+        [FromQuery] long locationId,
+        [FromQuery] bool reportLedgerDue = false)
     {
-        var ctx = await posService.GetInvoicePrintContextAsync(invoiceNo, companyId, locationId);
+        var ctx = await posService.GetInvoicePrintContextAsync(
+            invoiceNo, companyId, locationId, reportLedgerDue);
         return ctx is null ? NotFound() : Ok(ctx);
     }
 

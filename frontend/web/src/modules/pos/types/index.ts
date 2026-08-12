@@ -412,6 +412,8 @@ export interface InvoicePrintContext {
   collectedAmount: number;
   /** SalesOrder.TotalAmount (invoice sales amount). */
   salesAmount: number;
+  /** TempLedgerDue.PreviousDue via SP_PosSalesLedgerDue (invoice report). */
+  previousDue?: number;
 }
 
 export interface LoadedInvoice {

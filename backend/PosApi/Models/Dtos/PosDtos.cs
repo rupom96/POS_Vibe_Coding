@@ -162,7 +162,9 @@ public record InvoicePrintContextDto(
     string? VerifiedByName,
     decimal CollectedAmount,
     /// <summary>SalesOrder.TotalAmount for the invoice (Sales Amount on print).</summary>
-    decimal SalesAmount);
+    decimal SalesAmount,
+    /// <summary>TempLedgerDue.PreviousDue after SP_PosSalesLedgerDue (invoice report only).</summary>
+    decimal? PreviousDue = null);
 
 public record LoadedInvoiceDto(
     Guid SalesOrderId,

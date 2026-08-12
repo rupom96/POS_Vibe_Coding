@@ -340,10 +340,16 @@ export const posApi = createApi({
     }),
     getInvoicePrintContext: builder.query<
       InvoicePrintContext,
-      { invoiceNo: string; companyId: number; locationId: number }
+      { invoiceNo: string; companyId: number; locationId: number; reportLedgerDue?: boolean }
     >({
-      query: ({ invoiceNo, companyId, locationId }) =>
-        `/pos/invoices/${encodeURIComponent(invoiceNo)}/print-context?companyId=${companyId}&locationId=${locationId}`,
+      query: ({ invoiceNo, companyId, locationId, reportLedgerDue }) => {
+        const params = new URLSearchParams({
+          companyId: String(companyId),
+          locationId: String(locationId),
+        });
+        if (reportLedgerDue) params.set('reportLedgerDue', 'true');
+        return `/pos/invoices/${encodeURIComponent(invoiceNo)}/print-context?${params}`;
+      },
     }),
     multiScan: builder.query<MultiScanResult, { q: string; companyId?: number; locationId?: number }>({
       query: ({ q, companyId, locationId }) => {

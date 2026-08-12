@@ -13,7 +13,11 @@ public interface IPosService
     Task<IReadOnlyList<InvoiceSearchResultDto>> SearchInvoicesAsync(string? term, long companyId, long locationId, int limit = 50);
     Task<IReadOnlyList<TodayInvoiceListItemDto>> GetTodayInvoicesAsync(long companyId, long locationId, long employeeId, int limit = 100);
     Task<LoadedInvoiceDto?> GetInvoiceAsync(string invoiceNo, long companyId, long locationId);
-    Task<InvoicePrintContextDto?> GetInvoicePrintContextAsync(string invoiceNo, long companyId, long locationId);
+    Task<InvoicePrintContextDto?> GetInvoicePrintContextAsync(
+        string invoiceNo,
+        long companyId,
+        long locationId,
+        bool reportLedgerDue = false);
     Task<SaveInvoiceResponse> SaveInvoiceAsync(SaveInvoiceRequest request);
     Task<MultiScanResultDto?> MultiScanAsync(string term, long? companyId, long? locationId);
     Task<IReadOnlyList<MultiScanSearchItemDto>> SearchMultiScanAsync(string term, long? companyId, long? locationId, int limit = 25);
@@ -274,7 +278,8 @@ public class PosService(
     public async Task<InvoicePrintContextDto?> GetInvoicePrintContextAsync(
         string invoiceNo,
         long companyId,
-        long locationId)
+        long locationId,
+        bool reportLedgerDue = false)
     {
         using var conn = db.CreateConnection();
 
@@ -323,6 +328,10 @@ public class PosService(
 
         company ??= new CompanyLetterheadDto { CompanyId = companyId, Name = "" };
 
+        decimal? previousDue = null;
+        if (reportLedgerDue)
+            previousDue = await GetInvoiceReportPreviousDueAsync(conn, invoiceNo.Trim());
+
         return new InvoicePrintContextDto(
             company,
             so.InvoiceNo,
@@ -330,7 +339,29 @@ public class PosService(
             so.BillingByName,
             so.VerifiedByName,
             so.CollectedAmount,
-            so.SalesAmount);
+            so.SalesAmount,
+            previousDue);
+    }
+
+    /// <summary>
+    /// Invoice Report: run SP_PosSalesLedgerDue, then read TempLedgerDue.PreviousDue for this invoice.
+    /// </summary>
+    private static async Task<decimal> GetInvoiceReportPreviousDueAsync(IDbConnection conn, string invoiceNo)
+    {
+        await conn.ExecuteAsync(
+            "SP_PosSalesLedgerDue",
+            new { InvoiceNo = invoiceNo },
+            commandType: CommandType.StoredProcedure);
+
+        var previousDue = await conn.ExecuteScalarAsync<decimal?>(
+            """
+            SELECT TOP 1 PreviousDue
+            FROM TempLedgerDue
+            WHERE InvoiceNo = @InvoiceNo
+            """,
+            new { InvoiceNo = invoiceNo });
+
+        return previousDue ?? 0m;
     }
 
     public async Task<SaveInvoiceResponse> SaveInvoiceAsync(SaveInvoiceRequest request)
