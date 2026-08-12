@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+dist/
+
+# Build
+backend/**/bin/
+backend/**/obj/
+PUBLISHES/
+
+# Environment / secrets (use *.Example.json templates)
+backend/PosApi/appsettings.json
+frontend/web/public/StaticLoginSession.json
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vs/
+.vscode/
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local archives / large binaries
+*.rar
+*.zip
+*.7z
+*.pdf

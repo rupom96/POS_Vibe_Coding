@@ -1,0 +1,10 @@
+{
+  "companyId": 1,
+  "companyName": "Your Company",
+  "locationId": 1,
+  "locationName": "Head office",
+  "securityUserId": 1,
+  "securityUserName": "admin",
+  "employeeId": 1,
+  "employeeName": "Sales User"
+}
