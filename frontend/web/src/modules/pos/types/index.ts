@@ -310,6 +310,8 @@ export interface SaveInvoiceRequest {
   mobile?: string;
   address?: string;
   remarks?: string;
+  /** SalesOrder_Delivery.DeliveryAddress — insert on create; update on edit */
+  deliveryAddress?: string;
   locationId: number;
   paymentModeId: number;
   subPaymentModeId?: number;
@@ -412,6 +414,8 @@ export interface InvoicePrintContext {
   collectedAmount: number;
   /** SalesOrder.TotalAmount (invoice sales amount). */
   salesAmount: number;
+  /** TempLedgerDue.PreviousDue via SP_PosSalesLedgerDue (Invoice Report / Invoice POS). */
+  previousDue?: number;
 }
 
 export interface LoadedInvoice {
@@ -423,6 +427,8 @@ export interface LoadedInvoice {
   mobile?: string;
   address?: string;
   remarks?: string;
+  /** From SalesOrder_Delivery.DeliveryAddress for this SalesOrderId */
+  deliveryAddress?: string;
   referenceId?: number;
   biznessEventTypeId: number;
   projectId?: number;

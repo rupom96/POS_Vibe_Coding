@@ -75,6 +75,7 @@ export function InvoiceReportModal({
       invoiceNo: form.invoiceNo.trim(),
       companyId: posSession.companyId,
       locationId: form.locationId,
+      reportLedgerDue: true,
     });
   }, [open, form.invoiceNo, form.locationId, fetchContext]);
 
@@ -90,8 +91,8 @@ export function InvoiceReportModal({
 
   const rows = filledPrintLines(form.lines);
   const company = ctx?.company;
-  // Previous Due = ledger due loaded on customer select (frontend).
-  const previousDue = form.ledgerDue ?? 0;
+  // Previous Due = SP_PosSalesLedgerDue → TempLedgerDue.PreviousDue for this invoice.
+  const previousDue = ctx?.previousDue ?? 0;
   // Sales Amount = SalesOrder.TotalAmount from backend; fallback to current POS grand total.
   const salesAmount = ctx?.salesAmount ?? grandTotal;
   // Collected Amount = sum of approved (Approved='Y') collections against this InvoiceNo.

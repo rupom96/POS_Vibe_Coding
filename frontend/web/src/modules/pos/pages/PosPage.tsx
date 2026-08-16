@@ -12,7 +12,7 @@ import { CustomerStatsTip } from '../components/CustomerStatsTip';
 import { PriceHistoryTip } from '../components/PriceHistoryTip';
 import { useToast } from '../../../shared/components/Toast';
 import { posSession } from '../../../config/posSession';
-import { PosItemsTable } from '../components/grid/PosItemsTable';
+import { PosItemsTable, type PosItemsTableHandle } from '../components/grid/PosItemsTable';
 import { SerialModal } from '../components/modals/SerialModal';
 import { StatusBar } from '../components/layout/StatusBar';
 import { TreeSidebar } from '../components/layout/TreeSidebar';
@@ -294,6 +294,7 @@ export function PosPage() {
   const scanModalOpenRef = useRef(false);
   const focusedProductLineIdRef = useRef<string | null>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
+  const itemsTableRef = useRef<PosItemsTableHandle>(null);
   const lastRemoteScanFrameAtRef = useRef(0);
   const linesRef = useRef(form.lines);
   linesRef.current = form.lines;
@@ -578,6 +579,10 @@ export function PosPage() {
     if (!loginUserWiseSalesPersonSet && customer.employeeId && customer.employeeId > 0) {
       dispatch(updateField({ key: 'employeeId', value: customer.employeeId }));
     }
+    // After customer pick → focus first empty product cell in Invoice Items.
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => itemsTableRef.current?.focusFirstEmptyProduct(), 0);
+    });
     try {
       const due = await getLedgerDue({
         buyerId: customer.buyerId,
@@ -1052,6 +1057,7 @@ export function PosPage() {
         mobile: form.mobile,
         address: form.address,
         remarks: form.remarks,
+        deliveryAddress: form.deliveryAddress,
         locationId: form.locationId,
         paymentModeId: form.paymentModeId,
         subPaymentModeId: form.subPaymentModeId,
@@ -1844,14 +1850,30 @@ export function PosPage() {
                     }}
                   />
                 </div>
-                <div className="fr" style={{ position: 'relative' }}>
-                  <span className="fl">Sales Person</span>
-                  <SalesPersonSearchInput
-                    value={selectedSalesPerson}
-                    options={salesPersons}
-                    disabled={!salesPersonEditable || isInvoiceReadOnly}
-                    onSelect={onSalesPersonSelect}
-                    onClear={onSalesPersonClear}
+                <div className="fr" style={{ position: 'relative', gap: 5 }}>
+                  <span className="fl" style={{ flexShrink: 0 }}>Sales Person</span>
+                  <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+                    <SalesPersonSearchInput
+                      value={selectedSalesPerson}
+                      options={salesPersons}
+                      disabled={!salesPersonEditable || isInvoiceReadOnly}
+                      onSelect={onSalesPersonSelect}
+                      onClear={onSalesPersonClear}
+                    />
+                  </div>
+                  <span className="fl" style={{ flexShrink: 0, marginLeft: 4 }}>Delivery Address</span>
+                  <input
+                    className="fv"
+                    style={{ flex: 1.2, minWidth: 0 }}
+                    value={form.deliveryAddress}
+                    maxLength={500}
+                    readOnly={isInvoiceReadOnly}
+                    disabled={isInvoiceReadOnly}
+                    placeholder="Delivery address..."
+                    onChange={(e) => {
+                      if (isInvoiceReadOnly) return;
+                      dispatch(updateField({ key: 'deliveryAddress', value: e.target.value }));
+                    }}
                   />
                 </div>
                 <div className="fr" style={{ gap: 5 }}>
@@ -1916,6 +1938,7 @@ export function PosPage() {
           </div>
 
           <PosItemsTable
+            ref={itemsTableRef}
             lines={lines}
             locationId={form.locationId}
             companyId={posSession.companyId}

@@ -81,6 +81,8 @@ export interface PosFormState {
   mobile: string;
   address: string;
   remarks: string;
+  /** SalesOrder_Delivery.DeliveryAddress */
+  deliveryAddress: string;
   invoiceNo: string;
   salesOrderNo: string;
   ledgerDue: number;
@@ -113,6 +115,7 @@ const initialState: PosFormState = {
   mobile: '',
   address: '',
   remarks: '',
+  deliveryAddress: '',
   invoiceNo: '',
   salesOrderNo: '',
   ledgerDue: 0,
@@ -259,6 +262,7 @@ const posSlice = createSlice({
       state.mobile = snapshot.mobile;
       state.address = snapshot.address;
       state.remarks = snapshot.remarks;
+      state.deliveryAddress = snapshot.deliveryAddress ?? '';
       state.invoiceNo = snapshot.invoiceNo;
       state.ledgerDue = snapshot.ledgerDue;
       state.paymentModeId = snapshot.paymentModeId;
@@ -299,6 +303,7 @@ const posSlice = createSlice({
       state.mobile = invoice.mobile ?? '';
       state.address = invoice.address ?? '';
       state.remarks = invoice.remarks ?? '';
+      state.deliveryAddress = invoice.deliveryAddress ?? '';
       state.referenceId = invoice.referenceId;
       state.biznessEventTypeId = invoice.biznessEventTypeId;
       state.projectId = invoice.projectId ?? 0;
@@ -358,6 +363,7 @@ const posSlice = createSlice({
       state.mobile = '';
       state.address = '';
       state.remarks = '';
+      state.deliveryAddress = '';
       state.invoiceNo = action.payload.invoiceNo;
       state.salesOrderId = action.payload.salesOrderId;
       state.ledgerDue = 0;

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using PosApi.Exceptions;
+using PosApi.Logging;
 using PosApi.Models.Dtos;
 using PosApi.Services;
 
@@ -228,7 +229,7 @@ public class ProductsController(IProductService productService) : ControllerBase
 
 [ApiController]
 [Route("api/pos")]
-public class PosController(IPosService posService) : ControllerBase
+public class PosController(IPosService posService, SqlUserFriendlyError friendlyError) : ControllerBase
 {
     [HttpGet("next-invoice")]
     public async Task<ActionResult<NextInvoiceDto>> GetNextInvoice(
@@ -266,9 +267,11 @@ public class PosController(IPosService posService) : ControllerBase
     public async Task<ActionResult<InvoicePrintContextDto>> GetInvoicePrintContext(
         string invoiceNo,
         [FromQuery] long companyId,
-        [FromQuery] long locationId)
+        [FromQuery] long locationId,
+        [FromQuery] bool reportLedgerDue = false)
     {
-        var ctx = await posService.GetInvoicePrintContextAsync(invoiceNo, companyId, locationId);
+        var ctx = await posService.GetInvoicePrintContextAsync(
+            invoiceNo, companyId, locationId, reportLedgerDue);
         return ctx is null ? NotFound() : Ok(ctx);
     }
 
@@ -304,7 +307,7 @@ public class PosController(IPosService posService) : ControllerBase
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { message = "Failed to save invoice.", detail = ex.Message });
+            return StatusCode(500, new { message = friendlyError.ToUserMessage(ex) });
         }
     }
 }

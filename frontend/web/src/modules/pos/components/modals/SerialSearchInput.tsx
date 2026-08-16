@@ -33,39 +33,32 @@ export const SerialSearchInput = memo(function SerialSearchInput({
   inputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
   const [filterText, setFilterText] = useState('');
-  const [open, setOpen] = useState(false);
   const [options, setOptions] = useState<ProductSerialOption[]>([]);
-  const [checked, setChecked] = useState<Map<string, ProductSerialOption>>(() => new Map());
+  const [loading, setLoading] = useState(false);
   const [searchSerials] = useLazySearchProductSerialsQuery();
   const reqId = useRef(0);
-  const { inputRef, menuRef, wrapRef, menuStyle, updateMenuPosition, isOutside } = useAutocompleteMenu(open, 280);
-  const { highlight, setHighlight, moveDown, moveUp } = useAutocompleteHighlight(open, options.length);
-  useScrollHighlightedOption(menuRef, highlight, open);
-
-  const selectedSerials = Array.from(checked.values()).map((o) => o.serialNo);
-
-  const inputValue = selectedSerials.length === 0
-    ? filterText
-    : filterText
-      ? `${selectedSerials.join(', ')}, ${filterText}`
-      : selectedSerials.join(', ');
+  const localInputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const { highlight, setHighlight, moveDown, moveUp } = useAutocompleteHighlight(true, options.length);
+  useScrollHighlightedOption(listRef, highlight, true);
 
   const bindInputRef = useCallback(
     (el: HTMLInputElement | null) => {
-      inputRef.current = el;
+      localInputRef.current = el;
       if (externalRef) externalRef.current = el;
     },
-    [externalRef, inputRef],
+    [externalRef],
   );
 
   const loadOptions = useCallback(async (term: string) => {
     const id = ++reqId.current;
+    setLoading(true);
     try {
       const result = await searchSerials({
         productId,
         locationId,
         q: term.trim() || undefined,
-        limit: 50,
+        limit: 200,
         exclude,
       }).unwrap();
       if (id === reqId.current) {
@@ -77,228 +70,131 @@ export const SerialSearchInput = memo(function SerialSearchInput({
         setOptions([]);
         setHighlight(-1);
       }
+    } finally {
+      if (id === reqId.current) setLoading(false);
     }
   }, [exclude, locationId, productId, searchSerials, setHighlight]);
 
-  const runSearch = useDebouncedCallback(loadOptions, 300);
+  const runSearch = useDebouncedCallback(loadOptions, 250);
 
-  // When product/location/exclude change while the list is open, refresh options.
-  // Focus / type own their own loads — avoid fighting focus browse-all with filterText.
   useEffect(() => {
-    if (!open) return;
     void loadOptions(filterText);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-fetch on catalog keys
+    // Reload when grid serials change so deleted serials reappear in the box.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exclude, locationId, productId]);
 
-  const toggleChecked = useCallback((option: ProductSerialOption) => {
-    const key = serialKey(option.serialNo);
-    setChecked((prev) => {
-      const next = new Map(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        const limit = maxAddable ?? Number.POSITIVE_INFINITY;
-        if (next.size >= limit) {
-          onStockLimit?.();
-          return prev;
-        }
-        next.set(key, option);
-      }
-      return next;
-    });
-  }, [maxAddable, onStockLimit]);
+  const pick = useCallback((option: ProductSerialOption) => {
+    if ((maxAddable ?? 1) <= 0) {
+      onStockLimit?.();
+      return;
+    }
+    onAdd([option]);
+    localInputRef.current?.focus();
+  }, [maxAddable, onAdd, onStockLimit]);
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
-    const joined = selectedSerials.join(', ');
-
-    if (selectedSerials.length > 0 && (value === joined || value.startsWith(`${joined},`))) {
-      const tail = value === joined ? '' : value.slice(joined.length).replace(/^,\s*/, '');
-      setFilterText(tail);
-      setOpen(true);
-      setHighlight(-1);
-      updateMenuPosition();
-      runSearch(tail);
-      return;
-    }
-
-    if (!value.includes(',')) {
-      setChecked(new Map());
-      setFilterText(value);
-      setOpen(true);
-      setHighlight(-1);
-      updateMenuPosition();
-      runSearch(value);
-      return;
-    }
-
-    const parts = value.split(',').map((s) => s.trim()).filter(Boolean);
-    const next = new Map<string, ProductSerialOption>();
-    for (const part of parts) {
-      const key = serialKey(part);
-      next.set(key, checked.get(key) ?? { serialNo: part, discountAmount: 0 });
-    }
-    setChecked(next);
-    setFilterText('');
-    setOpen(true);
+    setFilterText(value);
     setHighlight(-1);
-    updateMenuPosition();
-    runSearch('');
-  }, [checked, runSearch, selectedSerials, setHighlight, updateMenuPosition]);
-
-  const handleFocus = useCallback(() => {
-    setOpen(true);
-    updateMenuPosition();
-    // Focus → browse all serials (do not filter by typed label).
-    void loadOptions('');
-  }, [loadOptions, updateMenuPosition]);
-
-  const handleBlur = useCallback(() => {
-    window.setTimeout(() => setOpen(false), 150);
-  }, []);
-
-  const commitAdd = useCallback(() => {
-    const picked = Array.from(checked.values());
-    if (picked.length) {
-      const limit = maxAddable ?? picked.length;
-      const toAdd = picked.slice(0, limit);
-      if (toAdd.length < picked.length) onStockLimit?.();
-      onAdd(toAdd);
-      setChecked(new Map());
-      setFilterText('');
-      void loadOptions('');
-      inputRef.current?.focus();
-      return;
-    }
-    const typed = filterText.trim();
-    if (typed) {
-      if ((maxAddable ?? 1) <= 0) {
-        onStockLimit?.();
-        return;
-      }
-      onAdd([{ serialNo: typed, discountAmount: 0 }]);
-      setFilterText('');
-      void loadOptions('');
-      inputRef.current?.focus();
-    }
-  }, [checked, filterText, inputRef, loadOptions, maxAddable, onAdd, onStockLimit]);
+    runSearch(value);
+  }, [runSearch, setHighlight]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    const handled = handleAutocompleteKeyDown(e, {
-      open,
-      optionCount: options.length,
-      highlight,
-      moveDown,
-      moveUp,
-      setHighlight,
-      openMenu: () => {
-        setOpen(true);
-        updateMenuPosition();
-        void loadOptions(filterText);
-      },
-      onPickIndex: (index) => {
-        const item = options[index];
-        if (item) toggleChecked(item);
-      },
-      onEscape: () => {
-        setOpen(false);
-        setHighlight(-1);
-      },
-      // Enter with highlight already handled by onPickIndex; bare Enter commits selection.
-      onEnterWithoutPick: () => {
-        commitAdd();
-        return true;
-      },
-    });
-    if (handled) {
-      e.stopPropagation();
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (options.length) moveDown();
       return;
     }
-    if (e.key === 'Enter') {
+    if (e.key === 'ArrowUp') {
       e.preventDefault();
-      commitAdd();
+      if (options.length) moveUp();
+      return;
     }
+    if (e.key === 'Escape') {
+      setHighlight(-1);
+      return;
+    }
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+
+    if (highlight >= 0 && options[highlight]) {
+      pick(options[highlight]);
+      return;
+    }
+
+    const typed = filterText.trim();
+    if (!typed) return;
+    const exact = options.find((o) => serialKey(o.serialNo) === serialKey(typed));
+    if (exact) {
+      pick(exact);
+      setFilterText('');
+      void loadOptions('');
+      return;
+    }
+    if ((maxAddable ?? 1) <= 0) {
+      onStockLimit?.();
+      return;
+    }
+    onAdd([{ serialNo: typed, discountAmount: 0 }]);
+    setFilterText('');
+    void loadOptions('');
   }, [
-    commitAdd,
     filterText,
     highlight,
     loadOptions,
+    maxAddable,
     moveDown,
     moveUp,
-    open,
+    onAdd,
+    onStockLimit,
     options,
-    setHighlight,
-    toggleChecked,
-    updateMenuPosition,
+    pick,
   ]);
 
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (isOutside(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [isOutside]);
-
-  const checkedCount = checked.size;
-  const addLabel = checkedCount > 0 ? `Add (${checkedCount})` : 'Add';
-
-  const menu = open && options.length > 0 ? (
-    <ul ref={menuRef} className="cust-ac-list cust-ac-list--portal serial-ac-list" role="listbox" style={menuStyle}>
-      {options.map((opt, idx) => {
-        const isChecked = checked.has(serialKey(opt.serialNo));
-        const isHi = highlight === idx;
-        return (
-          <li key={opt.serialNo}>
-            <button
-              type="button"
-              data-ac-idx={idx}
-              className={`cust-ac-item serial-ac-item${isChecked ? ' is-checked' : ''}${isHi ? ' is-selected' : ''}`}
-              aria-selected={isHi || isChecked}
-              onMouseDown={(e) => e.preventDefault()}
-              onMouseEnter={() => setHighlight(idx)}
-              onClick={() => toggleChecked(opt)}
-            >
-              <input
-                type="checkbox"
-                className="serial-ac-check"
-                checked={isChecked}
-                readOnly
-                tabIndex={-1}
-              />
-              <span className="serial-ac-text">
-                <span className="cust-ac-name">{opt.serialNo}</span>
-                <span className="cust-ac-meta">
-                  {opt.discountAmount > 0 ? `Disc: ${opt.discountAmount}` : '—'}
-                </span>
-              </span>
-            </button>
-          </li>
-        );
-      })}
-    </ul>
-  ) : null;
+  const emptyLabel = loading
+    ? 'Loading serials…'
+    : filterText.trim()
+      ? 'No matching serials'
+      : 'No serials available';
 
   return (
-    <>
-      <div className={`cust-ac-wrap${open ? ' is-open' : ''}`} ref={wrapRef} style={{ flex: 1 }}>
-        <input
-          ref={bindInputRef}
-          className="mfi"
-          value={inputValue}
-          autoComplete="off"
-          placeholder="Scan or type serial..."
-          onChange={handleChange}
-          onFocus={handleFocus}
-          onBlur={handleBlur}
-          onKeyDown={handleKeyDown}
-        />
-        {menu && createPortal(menu, document.body)}
+    <div className="serial-pick">
+      <input
+        ref={bindInputRef}
+        className="mfi"
+        value={filterText}
+        autoComplete="off"
+        placeholder="Search serial..."
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+      />
+      <div ref={listRef} className="serial-pick-box" role="listbox" aria-label="Available serials">
+        {options.length === 0 ? (
+          <div className="serial-pick-empty">{emptyLabel}</div>
+        ) : (
+          options.map((opt, idx) => {
+            const isHi = highlight === idx;
+            return (
+              <button
+                key={opt.serialNo}
+                type="button"
+                data-ac-idx={idx}
+                className={`serial-pick-item${isHi ? ' is-selected' : ''}`}
+                role="option"
+                aria-selected={isHi}
+                onMouseEnter={() => setHighlight(idx)}
+                onClick={() => pick(opt)}
+              >
+                <span className="serial-pick-no">{opt.serialNo}</span>
+                {opt.discountAmount > 0 ? (
+                  <span className="serial-pick-meta">Disc: {opt.discountAmount}</span>
+                ) : null}
+              </button>
+            );
+          })
+        )}
       </div>
-      <button type="button" className="bp" style={{ padding: '0 12px', fontSize: 12 }} onClick={commitAdd}>
-        {addLabel}
-      </button>
-    </>
+    </div>
   );
 });
 

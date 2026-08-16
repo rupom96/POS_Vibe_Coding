@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { ProductSearchInput, type ProductSearchInputHandle } from '../ProductSearchInput';
 import type { InvoiceLine, ProductSearchResult } from '../../types';
@@ -20,26 +20,12 @@ type PendingFocus =
   | { kind: 'product-after'; lineId: string }
   | null;
 
-export const PosItemsTable = memo(function PosItemsTable({
-  lines,
-  locationId,
-  companyId,
-  readOnly = false,
-  onLineChange,
-  onMarkDeleted,
-  onEnsureTrailingRow,
-  onProductSelect,
-  onProductNameCommit,
-  onProductFocus,
-  onProductBlur,
-  onQuantityBlur,
-  onUnitPriceBlur,
-  onSelectProductFromTree,
-  onRowHover,
-  onOpenSerial,
-  onClear,
-  onFocusSave,
-}: {
+export type PosItemsTableHandle = {
+  /** Focus first empty product cell (used after customer select). */
+  focusFirstEmptyProduct: () => void;
+};
+
+export const PosItemsTable = memo(forwardRef<PosItemsTableHandle, {
   lines: InvoiceLine[];
   locationId: number;
   companyId: number;
@@ -59,7 +45,26 @@ export const PosItemsTable = memo(function PosItemsTable({
   onClear: () => void;
   /** Focus the POS Save button (actual DOM focus). */
   onFocusSave?: () => void;
-}) {
+}>(function PosItemsTable({
+  lines,
+  locationId,
+  companyId,
+  readOnly = false,
+  onLineChange,
+  onMarkDeleted,
+  onEnsureTrailingRow,
+  onProductSelect,
+  onProductNameCommit,
+  onProductFocus,
+  onProductBlur,
+  onQuantityBlur,
+  onUnitPriceBlur,
+  onSelectProductFromTree,
+  onRowHover,
+  onOpenSerial,
+  onClear,
+  onFocusSave,
+}, ref) {
   const itemCount = useMemo(() => lines.filter(isLineFilled).length, [lines]);
   const selectedProductIdsByLine = useMemo(() => {
     const map = new Map<string, number[]>();
@@ -171,6 +176,17 @@ export const PosItemsTable = memo(function PosItemsTable({
       window.requestAnimationFrame(() => { tryFocus(); });
     });
   }, []);
+
+  useImperativeHandle(ref, () => ({
+    focusFirstEmptyProduct: () => {
+      if (readOnly) return;
+      const target =
+        visibleLines.find((l) => !hasProduct(l))
+        ?? visibleLines[0];
+      if (!target) return;
+      focusProduct(target.id);
+    },
+  }), [focusProduct, readOnly, visibleLines]);
 
   // Resolve deferred focus after product apply / trailing row appears.
   useEffect(() => {
@@ -485,4 +501,4 @@ export const PosItemsTable = memo(function PosItemsTable({
       )}
     </div>
   );
-});
+}));
