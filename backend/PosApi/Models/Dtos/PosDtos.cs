@@ -57,6 +57,7 @@ public record SaveInvoiceRequest(
     string? Mobile,
     string? Address,
     string? Remarks,
+    string? DeliveryAddress,
     long LocationId,
     long PaymentModeId,
     long? SubPaymentModeId,
@@ -163,7 +164,7 @@ public record InvoicePrintContextDto(
     decimal CollectedAmount,
     /// <summary>SalesOrder.TotalAmount for the invoice (Sales Amount on print).</summary>
     decimal SalesAmount,
-    /// <summary>TempLedgerDue.PreviousDue after SP_PosSalesLedgerDue (invoice report only).</summary>
+    /// <summary>TempLedgerDue.PreviousDue after SP_PosSalesLedgerDue (Invoice Report / Invoice POS).</summary>
     decimal? PreviousDue = null);
 
 public record LoadedInvoiceDto(
@@ -175,6 +176,7 @@ public record LoadedInvoiceDto(
     string? Mobile,
     string? Address,
     string? Remarks,
+    string? DeliveryAddress,
     long? ReferenceId,
     long BiznessEventTypeId,
     long? ProjectId,

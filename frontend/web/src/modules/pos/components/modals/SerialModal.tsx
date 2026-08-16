@@ -508,27 +508,23 @@ export function SerialModal({
 
             <div className="mfll">Scan / Input Serial</div>
 
-            <div style={{ display: 'flex', gap: 6 }}>
+            <SerialSearchInput
 
-              <SerialSearchInput
+              productId={productId}
 
-                productId={productId}
+              locationId={locationId}
 
-                locationId={locationId}
+              exclude={exclude}
 
-                exclude={exclude}
+              maxAddable={slotsLeft}
 
-                maxAddable={slotsLeft}
+              inputRef={scanRef}
 
-                inputRef={scanRef}
+              onAdd={addFromOptions}
 
-                onAdd={addFromOptions}
+              onStockLimit={() => onToast(`Cannot exceed stock (${stockQty} available)`, '⚠')}
 
-                onStockLimit={() => onToast(`Cannot exceed stock (${stockQty} available)`, '⚠')}
-
-              />
-
-            </div>
+            />
 
           </div>
 

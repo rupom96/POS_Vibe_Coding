@@ -26,3 +26,7 @@ Thumbs.db
 *.zip
 *.7z
 *.pdf
+
+# Runtime activity / error logs
+**/logs/*.log
+frontend/web/public/logs/*.log

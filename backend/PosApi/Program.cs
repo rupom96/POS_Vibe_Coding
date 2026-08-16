@@ -6,6 +6,7 @@ using PosApi.Configuration;
 using PosApi.Data;
 using PosApi.Endpoints;
 using PosApi.Hubs;
+using PosApi.Logging;
 using PosApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -35,8 +36,14 @@ builder.Services.AddScoped<ILookupService, LookupService>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
 builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IPosService, PosService>();
+builder.Services.AddSingleton<IAppActivityLogger, AppActivityLogger>();
+builder.Services.AddSingleton<SqlUserFriendlyError>();
+builder.Services.AddScoped<ActivityLogActionFilter>();
 
-builder.Services.AddControllers();
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<ActivityLogActionFilter>();
+});
 builder.Services.AddSignalR(options =>
 {
     options.MaximumReceiveMessageSize = 512 * 1024;
@@ -86,6 +93,8 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+app.UseMiddleware<UnhandledExceptionMiddleware>();
 
 app.UseSwagger();
 app.UseSwaggerUI(options =>
