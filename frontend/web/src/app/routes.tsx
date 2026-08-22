@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { isEmbeddedMode } from '../config/runtimeConfig';
 import { PosPage } from '../modules/pos/pages/PosPage';
+import { SalesReturnPage } from '../modules/sales-return/pages/SalesReturnPage';
 import { HomePage } from '../pages/HomePage';
 import { RemoteScanPage } from '../pages/RemoteScanPage';
 import { AppLayout } from '../shared/layout/AppLayout';
@@ -17,6 +18,7 @@ export function AppRoutes() {
         <Route element={<AppLayout />}>
           <Route path="/" element={home} />
           <Route path="/pos" element={<PosPage />} />
+          <Route path="/sales-return" element={<SalesReturnPage />} />
         </Route>
         <Route path="*" element={fallback} />
       </Routes>

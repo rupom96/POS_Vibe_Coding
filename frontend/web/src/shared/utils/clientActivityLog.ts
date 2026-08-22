@@ -3,6 +3,7 @@ import { getApiBaseUrl, isRuntimeConfigLoaded, loginSession } from '../../config
 export function currentPageName(): string {
   const path = window.location.pathname.replace(/\/+$/, '') || '/';
   if (path.endsWith('/pos')) return 'Point of Sales';
+  if (path.endsWith('/sales-return')) return 'Sales Return';
   if (path.includes('/remote-scan')) return 'Remote Scan';
   if (path === '/' || path.endsWith('/index.html')) return 'Home';
   return path;

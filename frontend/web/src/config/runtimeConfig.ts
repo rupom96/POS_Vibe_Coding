@@ -171,7 +171,11 @@ export function getApiBaseUrl(): string {
   if (!loaded) {
     throw new Error('Runtime config is not loaded yet.');
   }
-  return apiSettings.baseUrl.replace(/\/+$/, '');
+  const raw = apiSettings.baseUrl.replace(/\/+$/, '');
+  if (raw.startsWith('/')) {
+    return `${window.location.origin.replace(/\/+$/, '')}${raw}`;
+  }
+  return raw;
 }
 
 export function getScanRelayHubUrl(): string {
@@ -201,7 +205,7 @@ export function getAppBaseUrl(): string {
   }
 
   try {
-    const apiUrl = new URL(getApiBaseUrl());
+    const apiUrl = new URL(getApiBaseUrl(), window.location.origin);
     const port = window.location.port || '5173';
     return `${apiUrl.protocol}//${apiUrl.hostname}:${port}`;
   } catch {

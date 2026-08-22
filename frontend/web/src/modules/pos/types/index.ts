@@ -84,6 +84,10 @@ export interface PosFeatureFlags {
   posMachineChargeFromBankSetup: boolean;
   /** True only when BRFeature PosSalesEdit is on AND SecurityMenu_User grants POSNEW edit path. */
   posSalesEdit: boolean;
+  /** When true, same product may appear on multiple invoice lines (merge offered on same price). */
+  posMultiplePriceSales: boolean;
+  /** Administration department + Administrator level only. */
+  canViewProductCost: boolean;
 }
 
 export interface BiznessEventTypeOption {
@@ -164,6 +168,8 @@ export interface ProductDetail {
   costMin?: number;
   costMax?: number;
   costAvg?: number;
+  /** True when CurrentStock has at least one row for this product (qty may be 0). */
+  hasCurrentStock?: boolean;
   productType?: string;
   hasPriceSetup: boolean;
 }

@@ -21,4 +21,11 @@ export const mainNavItems: NavItem[] = [
     icon: '⊕',
     description: 'Sales & invoicing',
   },
+  {
+    id: 'sales-return',
+    label: 'Sales Return',
+    path: '/sales-return',
+    icon: '↩',
+    description: 'Returns & refunds',
+  },
 ];

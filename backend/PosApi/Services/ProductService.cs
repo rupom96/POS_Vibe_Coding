@@ -127,6 +127,7 @@ public class ProductService(IDbConnectionFactory db) : IProductService
                 ISNULL(stock.MinCost, 0) AS CostMin,
                 ISNULL(stock.MaxCost, 0) AS CostMax,
                 ISNULL(stock.AvgCost, 0) AS CostAvg,
+                CASE WHEN ISNULL(stock.StockRowCount, 0) > 0 THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS HasCurrentStock,
                 p.ProductType,
                 CASE
                     WHEN EXISTS (SELECT 1 FROM Price prSetup WHERE prSetup.ProductId = p.ProductId)
@@ -137,15 +138,18 @@ public class ProductService(IDbConnectionFactory db) : IProductService
             LEFT JOIN Product_Warranty pw ON pw.ProductId = p.ProductId
             OUTER APPLY (
                 SELECT
-                    SUM(cs.Unit) AS StockQty,
-                    MIN(cs.Cost) AS MinCost,
-                    MAX(cs.Cost) AS MaxCost,
-                    CASE WHEN SUM(cs.Unit) > 0
-                         THEN SUM(cs.Cost * cs.Unit) / SUM(cs.Unit)
-                         ELSE 0 END AS AvgCost
+                    SUM(CASE WHEN cs.Unit > 0 THEN cs.Unit ELSE 0 END) AS StockQty,
+                    COUNT_BIG(1) AS StockRowCount,
+                    MIN(CASE WHEN cs.PurchaseId IS NOT NULL THEN cs.Cost END) AS MinCost,
+                    MAX(CASE WHEN cs.PurchaseId IS NOT NULL THEN cs.Cost END) AS MaxCost,
+                    CASE
+                        WHEN SUM(CASE WHEN cs.PurchaseId IS NOT NULL AND cs.Unit > 0 THEN cs.Unit ELSE 0 END) > 0
+                        THEN SUM(CASE WHEN cs.PurchaseId IS NOT NULL THEN cs.Cost * cs.Unit ELSE 0 END)
+                             / SUM(CASE WHEN cs.PurchaseId IS NOT NULL AND cs.Unit > 0 THEN cs.Unit ELSE 0 END)
+                        ELSE AVG(CASE WHEN cs.PurchaseId IS NOT NULL THEN cs.Cost END)
+                    END AS AvgCost
                 FROM CurrentStock cs
                 WHERE cs.ProductId = p.ProductId
-                  AND cs.Unit > 0
                   AND (@LocationId IS NULL OR cs.LocationId = @LocationId)
                   AND (@CompanyId IS NULL OR p.CompanyId = @CompanyId)
             ) stock
@@ -208,9 +212,9 @@ public class ProductService(IDbConnectionFactory db) : IProductService
         const string sql = """
             SELECT TOP 3
                 CASE
-                    WHEN ROW_NUMBER() OVER (ORDER BY sod.DateOfEntry DESC) = 1 THEN 'Today'
-                    WHEN ROW_NUMBER() OVER (ORDER BY sod.DateOfEntry DESC) = 2 THEN 'Recent'
-                    ELSE 'Earlier'
+                    WHEN ROW_NUMBER() OVER (ORDER BY sod.DateOfEntry DESC) = 1 THEN 'Last'
+                    WHEN ROW_NUMBER() OVER (ORDER BY sod.DateOfEntry DESC) = 2 THEN '2nd last'
+                    ELSE '3rd last'
                 END AS Label,
                 sod.Price AS Value
             FROM SalesOrderDetail sod
@@ -337,7 +341,7 @@ public class ProductService(IDbConnectionFactory db) : IProductService
             LEFT JOIN Brand b ON p.BrandId = b.BrandId
             LEFT JOIN Category c ON p.CategoryId = c.CategoryId AND c.GroupId = p.GroupId
             WHERE p.Active = 'Y'
-            ORDER BY pg.Name, CategoryName, BrandName, ProductLabel
+            ORDER BY pg.Name, BrandName, CategoryName, ProductLabel
             """;
 
         using var conn = db.CreateConnection();
@@ -352,22 +356,22 @@ public class ProductService(IDbConnectionFactory db) : IProductService
                 Label = g.Key.GroupName,
                 Icon = "📂",
                 Children = g
-                    .GroupBy(r => (r.CategoryKey, r.CategoryName))
-                    .OrderBy(c => c.Key.CategoryName, StringComparer.OrdinalIgnoreCase)
-                    .Select(c => new ProductTreeNodeDto
+                    .GroupBy(r => (r.BrandKey, r.BrandName))
+                    .OrderBy(b => b.Key.BrandName, StringComparer.OrdinalIgnoreCase)
+                    .Select(b => new ProductTreeNodeDto
                     {
-                        Id = $"c-{g.Key.GroupId}-{c.Key.CategoryKey}",
-                        Label = c.Key.CategoryName,
-                        Icon = "📂",
-                        Children = c
-                            .GroupBy(r => (r.BrandKey, r.BrandName))
-                            .OrderBy(b => b.Key.BrandName, StringComparer.OrdinalIgnoreCase)
-                            .Select(b => new ProductTreeNodeDto
+                        Id = $"b-{g.Key.GroupId}-{b.Key.BrandKey}",
+                        Label = b.Key.BrandName,
+                        Icon = "🏷️",
+                        Children = b
+                            .GroupBy(r => (r.CategoryKey, r.CategoryName))
+                            .OrderBy(c => c.Key.CategoryName, StringComparer.OrdinalIgnoreCase)
+                            .Select(c => new ProductTreeNodeDto
                             {
-                                Id = $"b-{g.Key.GroupId}-{c.Key.CategoryKey}-{b.Key.BrandKey}",
-                                Label = b.Key.BrandName,
-                                Icon = "🏷️",
-                                Children = b
+                                Id = $"c-{g.Key.GroupId}-{b.Key.BrandKey}-{c.Key.CategoryKey}",
+                                Label = c.Key.CategoryName,
+                                Icon = "📂",
+                                Children = c
                                     .OrderBy(p => p.ProductLabel, StringComparer.OrdinalIgnoreCase)
                                     .Select(p => new ProductTreeNodeDto
                                     {
@@ -379,10 +383,10 @@ public class ProductService(IDbConnectionFactory db) : IProductService
                                     })
                                     .ToList()
                             })
-                            .Where(b => b.Children.Count > 0)
+                            .Where(c => c.Children.Count > 0)
                             .ToList()
                     })
-                    .Where(c => c.Children.Count > 0)
+                    .Where(b => b.Children.Count > 0)
                     .ToList()
             })
             .Where(g => g.Children.Count > 0)
@@ -448,56 +452,55 @@ public class ProductService(IDbConnectionFactory db) : IProductService
             results.AddRange(rows.Select(r => ToSearchResult(r, "group", "📂")));
         }
 
-        if (typeFilter is "all" or "category")
-        {
-            var sql = """
-                SELECT TOP (@Limit)
-                    pg.ProductGroupId AS GroupId,
-                    c.CategoryId AS CategoryKey,
-                    CAST(0 AS bigint) AS BrandKey,
-                    c.Name AS Label,
-                    pg.Name + N' › ' + c.Name AS PathLabel
-                FROM Category c
-                INNER JOIN ProductGroup pg ON pg.ProductGroupId = c.GroupId
-                WHERE c.Name LIKE @Term
-                """;
-            var parameters = new DynamicParameters();
-            parameters.Add("Limit", perTypeLimit);
-            parameters.Add("Term", likeTerm);
-            if (companyId is > 0)
-            {
-                sql += " AND c.CompanyId = @CompanyId";
-                parameters.Add("CompanyId", companyId.Value);
-            }
-            sql += " ORDER BY pg.Name, c.Name";
-
-            var rows = await conn.QueryAsync<TreeSearchRow>(sql, parameters);
-            results.AddRange(rows.Select(r => ToSearchResult(r, "category", "📂")));
-        }
-
         if (typeFilter is "all" or "brand")
         {
             var sql = """
                 SELECT TOP (@Limit)
                     pg.ProductGroupId AS GroupId,
-                    ISNULL(p.CategoryId, 0) AS CategoryKey,
+                    CAST(0 AS bigint) AS CategoryKey,
                     b.BrandId AS BrandKey,
                     b.Name AS Label,
-                    pg.Name + N' › ' + ISNULL(NULLIF(LTRIM(RTRIM(c.Name)), ''), N'(No Category)') + N' › ' + b.Name AS PathLabel
+                    pg.Name + N' › ' + b.Name AS PathLabel
                 FROM Brand b
                 INNER JOIN Product p ON p.BrandId = b.BrandId AND p.Active = 'Y'
                 INNER JOIN ProductGroup pg ON pg.ProductGroupId = p.GroupId
-                LEFT JOIN Category c ON c.CategoryId = p.CategoryId AND c.GroupId = p.GroupId
                 WHERE b.Name LIKE @Term
                 """;
             var parameters = new DynamicParameters();
             parameters.Add("Limit", perTypeLimit);
             parameters.Add("Term", likeTerm);
             AppendProductScope(ref sql, parameters, companyId, locationId);
-            sql += " ORDER BY pg.Name, c.Name, b.Name";
+            sql += " GROUP BY pg.ProductGroupId, pg.Name, b.BrandId, b.Name";
+            sql += " ORDER BY pg.Name, b.Name";
 
             var rows = await conn.QueryAsync<TreeSearchRow>(sql, parameters);
             results.AddRange(rows.Select(r => ToSearchResult(r, "brand", "🏷️")));
+        }
+
+        if (typeFilter is "all" or "category")
+        {
+            var sql = """
+                SELECT TOP (@Limit)
+                    pg.ProductGroupId AS GroupId,
+                    c.CategoryId AS CategoryKey,
+                    ISNULL(p.BrandId, 0) AS BrandKey,
+                    c.Name AS Label,
+                    pg.Name + N' › ' + ISNULL(NULLIF(LTRIM(RTRIM(b.Name)), ''), N'(No Brand)') + N' › ' + c.Name AS PathLabel
+                FROM Category c
+                INNER JOIN ProductGroup pg ON pg.ProductGroupId = c.GroupId
+                INNER JOIN Product p ON p.CategoryId = c.CategoryId AND p.GroupId = pg.ProductGroupId AND p.Active = 'Y'
+                LEFT JOIN Brand b ON b.BrandId = p.BrandId
+                WHERE c.Name LIKE @Term
+                """;
+            var parameters = new DynamicParameters();
+            parameters.Add("Limit", perTypeLimit);
+            parameters.Add("Term", likeTerm);
+            AppendProductScope(ref sql, parameters, companyId, locationId);
+            sql += " GROUP BY pg.ProductGroupId, pg.Name, c.CategoryId, c.Name, p.BrandId, b.Name";
+            sql += " ORDER BY pg.Name, b.Name, c.Name";
+
+            var rows = await conn.QueryAsync<TreeSearchRow>(sql, parameters);
+            results.AddRange(rows.Select(r => ToSearchResult(r, "category", "📂")));
         }
 
         if (typeFilter is "all" or "product")
@@ -509,8 +512,8 @@ public class ProductService(IDbConnectionFactory db) : IProductService
                     ISNULL(p.BrandId, 0) AS BrandKey,
                     p.ProductId,
                     COALESCE(NULLIF(LTRIM(RTRIM(p.ModelNo)), ''), p.Name) AS Label,
-                    pg.Name + N' › ' + ISNULL(NULLIF(LTRIM(RTRIM(c.Name)), ''), N'(No Category)') + N' › '
-                        + ISNULL(NULLIF(LTRIM(RTRIM(b.Name)), ''), N'(No Brand)') + N' › '
+                    pg.Name + N' › ' + ISNULL(NULLIF(LTRIM(RTRIM(b.Name)), ''), N'(No Brand)') + N' › '
+                        + ISNULL(NULLIF(LTRIM(RTRIM(c.Name)), ''), N'(No Category)') + N' › '
                         + COALESCE(NULLIF(LTRIM(RTRIM(p.ModelNo)), ''), p.Name) AS PathLabel
                 FROM Product p
                 INNER JOIN ProductGroup pg ON pg.ProductGroupId = p.GroupId
@@ -523,7 +526,7 @@ public class ProductService(IDbConnectionFactory db) : IProductService
             parameters.Add("Limit", perTypeLimit);
             parameters.Add("Term", likeTerm);
             AppendProductScope(ref sql, parameters, companyId, locationId);
-            sql += " ORDER BY pg.Name, c.Name, b.Name, p.Name";
+            sql += " ORDER BY pg.Name, b.Name, c.Name, p.Name";
 
             var rows = await conn.QueryAsync<TreeSearchProductRow>(sql, parameters);
             results.AddRange(rows.Select(r => ToProductSearchResult(r, "product", "📄")));
@@ -538,8 +541,8 @@ public class ProductService(IDbConnectionFactory db) : IProductService
                     ISNULL(p.BrandId, 0) AS BrandKey,
                     p.ProductId,
                     LTRIM(RTRIM(csd.SerialNo)) AS Label,
-                    pg.Name + N' › ' + ISNULL(NULLIF(LTRIM(RTRIM(c.Name)), ''), N'(No Category)') + N' › '
-                        + ISNULL(NULLIF(LTRIM(RTRIM(b.Name)), ''), N'(No Brand)') + N' › '
+                    pg.Name + N' › ' + ISNULL(NULLIF(LTRIM(RTRIM(b.Name)), ''), N'(No Brand)') + N' › '
+                        + ISNULL(NULLIF(LTRIM(RTRIM(c.Name)), ''), N'(No Category)') + N' › '
                         + COALESCE(NULLIF(LTRIM(RTRIM(p.ModelNo)), ''), p.Name) + N' › '
                         + LTRIM(RTRIM(csd.SerialNo)) AS PathLabel
                 FROM CurrentStockDetail csd
@@ -809,8 +812,8 @@ public class ProductService(IDbConnectionFactory db) : IProductService
     private static int MatchTypeRank(string matchType) => matchType switch
     {
         "group" => 0,
-        "category" => 1,
-        "brand" => 2,
+        "brand" => 1,
+        "category" => 2,
         "product" => 3,
         "serial" => 4,
         _ => 5
@@ -861,8 +864,8 @@ public class ProductService(IDbConnectionFactory db) : IProductService
         var id = matchType switch
         {
             "group" => $"g-{groupId}",
-            "category" => $"c-{groupId}-{categoryKey}",
-            "brand" => $"b-{groupId}-{categoryKey}-{brandKey}",
+            "brand" => $"b-{groupId}-{brandKey}",
+            "category" => $"c-{groupId}-{brandKey}-{categoryKey}",
             _ => $"{matchType}-{groupId}"
         };
 
@@ -902,10 +905,10 @@ public class ProductService(IDbConnectionFactory db) : IProductService
         long brandKey)
     {
         var ids = new List<string> { "root", $"g-{groupId}" };
-        if (matchType is "category" or "brand" or "product" or "serial")
-            ids.Add($"c-{groupId}-{categoryKey}");
-        if (matchType is "brand" or "product" or "serial")
-            ids.Add($"b-{groupId}-{categoryKey}-{brandKey}");
+        if (matchType is "brand" or "category" or "product" or "serial")
+            ids.Add($"b-{groupId}-{brandKey}");
+        if (matchType is "category" or "product" or "serial")
+            ids.Add($"c-{groupId}-{brandKey}-{categoryKey}");
         return ids;
     }
 

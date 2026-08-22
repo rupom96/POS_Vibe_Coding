@@ -27,8 +27,8 @@ const SEARCH_ROW_HEIGHT = 42;
 const SEARCH_FILTERS: { id: ProductTreeSearchFilter; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'group', label: 'Group' },
-  { id: 'category', label: 'Category' },
   { id: 'brand', label: 'Brand' },
+  { id: 'category', label: 'Category' },
   { id: 'product', label: 'Product' },
   { id: 'serial', label: 'Serial' },
 ];
@@ -260,7 +260,7 @@ export function TreeSidebar({
             <input
               className="tsb-search"
               value={searchDraft}
-              placeholder="Search group, category, brand, product, serial..."
+              placeholder="Search group, brand, category, product, serial..."
               onChange={(e) => setSearchDraft(e.target.value)}
             />
             <select

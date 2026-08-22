@@ -103,12 +103,24 @@ app.UseSwaggerUI(options =>
     options.RoutePrefix = "swagger";
 });
 
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.UseCors("Frontend");
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapGet("/", () => Results.Redirect("/swagger"));
 app.MapControllers();
 app.MapAuthEndpoints();
 app.MapHub<ScanRelayHub>("/hubs/scan-relay");
+
+var spaIndex = Path.Combine(app.Environment.WebRootPath ?? string.Empty, "index.html");
+if (File.Exists(spaIndex))
+{
+    app.MapFallbackToFile("index.html");
+}
+else
+{
+    app.MapGet("/", () => Results.Redirect("/swagger"));
+}
 
 app.Run();
