@@ -3,6 +3,8 @@ import { isLineFilled } from './format';
 import { isCardPaymentActive, isMixedPaymentMode } from './paymentMode';
 
 export interface ValidateInvoiceInput {
+  companyId: number;
+  locationId: number;
   buyerId?: number;
   customerName: string;
   employeeId?: number;
@@ -22,6 +24,14 @@ export interface ValidateInvoiceInput {
 export function validateInvoiceForSave(input: ValidateInvoiceInput): string[] {
   const errors: string[] = [];
   const activeLines = input.lines.filter((line) => line.rowStatus !== 'deleted' && isLineFilled(line));
+
+  if (!input.companyId || input.companyId <= 0) {
+    errors.push('Company is required');
+  }
+
+  if (!input.locationId || input.locationId <= 0) {
+    errors.push('Location is required');
+  }
 
   if (!input.buyerId) {
     errors.push('Select or create a customer before saving');

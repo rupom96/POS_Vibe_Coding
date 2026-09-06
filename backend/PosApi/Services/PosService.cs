@@ -13,7 +13,11 @@ public interface IPosService
     Task<IReadOnlyList<InvoiceSearchResultDto>> SearchInvoicesAsync(string? term, long companyId, long locationId, int limit = 50);
     Task<IReadOnlyList<TodayInvoiceListItemDto>> GetTodayInvoicesAsync(long companyId, long locationId, long employeeId, int limit = 100);
     Task<LoadedInvoiceDto?> GetInvoiceAsync(string invoiceNo, long companyId, long locationId);
-    Task<InvoicePrintContextDto?> GetInvoicePrintContextAsync(string invoiceNo, long companyId, long locationId);
+    Task<InvoicePrintContextDto?> GetInvoicePrintContextAsync(
+        string invoiceNo,
+        long companyId,
+        long locationId,
+        bool reportLedgerDue = false);
     Task<SaveInvoiceResponse> SaveInvoiceAsync(SaveInvoiceRequest request);
     Task<MultiScanResultDto?> MultiScanAsync(string term, long? companyId, long? locationId);
     Task<IReadOnlyList<MultiScanSearchItemDto>> SearchMultiScanAsync(string term, long? companyId, long? locationId, int limit = 25);
@@ -23,6 +27,7 @@ public class PosService(
     IDbConnectionFactory db,
     ICustomerService customerService,
     IProductService productService,
+    IInvoiceNotificationService invoiceNotificationService,
     IOptions<PosSettings> settings) : IPosService
 {
     private const long VatTaxId = 2;
@@ -120,6 +125,7 @@ public class PosService(
                 so.SalesOrderNo,
                 so.BuyerId,
                 ISNULL(b.Name, '') AS CustomerName,
+                b.Code AS CustomerCode,
                 b.Phone AS Mobile,
                 b.Address,
                 so.Remarks,
@@ -135,10 +141,18 @@ public class PosService(
                 so.TotalTax,
                 ISNULL(so.TotalCharge, 0) AS OthersCharge,
                 so.TotalAmount,
-                ISNULL(pos.GivenAmount, so.ReceiveAmount) AS GivenAmount
+                ISNULL(pos.GivenAmount, so.ReceiveAmount) AS GivenAmount,
+                ISNULL(so.PreviousDues, 0) AS PreviousDues,
+                sodel.DeliveryAddress
             FROM SalesOrder so
             LEFT JOIN Buyer b ON b.BuyerId = so.BuyerId
             LEFT JOIN SalesOrder_POS pos ON pos.SalesOrderId = so.SalesOrderId
+            OUTER APPLY (
+                SELECT TOP 1 d.DeliveryAddress
+                FROM SalesOrder_Delivery d
+                WHERE d.SalesOrderId = so.SalesOrderId
+                ORDER BY d.DateOfEntry DESC
+            ) sodel
             WHERE so.InvoiceNo = @InvoiceNo
               AND so.CompanyId = @CompanyId
               AND so.LocationId = @LocationId
@@ -249,9 +263,11 @@ public class PosService(
             header.SalesOrderNo,
             header.BuyerId,
             header.CustomerName,
+            header.CustomerCode,
             header.Mobile,
             header.Address,
             header.Remarks,
+            header.DeliveryAddress,
             header.ReferenceId,
             header.BiznessEventTypeId,
             header.ProjectId,
@@ -266,6 +282,7 @@ public class PosService(
             header.OthersCharge,
             header.GivenAmount,
             header.TotalAmount,
+            header.PreviousDues,
             mixedPayment,
             cardPayment,
             lines);
@@ -274,7 +291,8 @@ public class PosService(
     public async Task<InvoicePrintContextDto?> GetInvoicePrintContextAsync(
         string invoiceNo,
         long companyId,
-        long locationId)
+        long locationId,
+        bool reportLedgerDue = false)
     {
         using var conn = db.CreateConnection();
 
@@ -323,6 +341,10 @@ public class PosService(
 
         company ??= new CompanyLetterheadDto { CompanyId = companyId, Name = "" };
 
+        decimal? previousDue = null;
+        if (reportLedgerDue)
+            previousDue = await GetInvoiceReportPreviousDueAsync(conn, invoiceNo.Trim());
+
         return new InvoicePrintContextDto(
             company,
             so.InvoiceNo,
@@ -330,7 +352,29 @@ public class PosService(
             so.BillingByName,
             so.VerifiedByName,
             so.CollectedAmount,
-            so.SalesAmount);
+            so.SalesAmount,
+            previousDue);
+    }
+
+    /// <summary>
+    /// Invoice Report / Invoice POS: run SP_PosSalesLedgerDue, then read TempLedgerDue.PreviousDue for this invoice.
+    /// </summary>
+    private static async Task<decimal> GetInvoiceReportPreviousDueAsync(IDbConnection conn, string invoiceNo)
+    {
+        await conn.ExecuteAsync(
+            "SP_PosSalesLedgerDue",
+            new { InvoiceNo = invoiceNo },
+            commandType: CommandType.StoredProcedure);
+
+        var previousDue = await conn.ExecuteScalarAsync<decimal?>(
+            """
+            SELECT TOP 1 PreviousDue
+            FROM TempLedgerDue
+            WHERE InvoiceNo = @InvoiceNo
+            """,
+            new { InvoiceNo = invoiceNo });
+
+        return previousDue ?? 0m;
     }
 
     public async Task<SaveInvoiceResponse> SaveInvoiceAsync(SaveInvoiceRequest request)
@@ -340,6 +384,14 @@ public class PosService(
 
         if (request.BiznessEventTypeId <= 0)
             throw new InvalidOperationException("Bizness event type is required.");
+
+        if (request.CompanyId <= 0)
+            throw new InvalidOperationException("Company is required.");
+
+        if (request.LocationId <= 0)
+            throw new InvalidOperationException("Location is required.");
+
+        var companyId = request.CompanyId;
 
         if (request.ProjectId is null or <= 0)
             throw new InvalidOperationException("Project is required.");
@@ -404,7 +456,7 @@ public class PosService(
 
             // BackDateEntrySales OFF â†’ lock date (new = now; edit = existing InvoiceDate).
             var invoiceDate = request.InvoiceDate;
-            if (!await IsFeatureAllowedAsync(conn, tx, _settings.CompanyId, "BackDateEntrySales"))
+            if (!await IsFeatureAllowedAsync(conn, tx, companyId, "BackDateEntrySales"))
             {
                 if (isEdit)
                 {
@@ -496,11 +548,14 @@ public class PosService(
 
                 await PosCollectionService.DeleteCollectionsForSalesOrderAsync(
                     conn, tx, salesOrderId, invoiceNo, entryBy);
+
+                await UpsertSalesOrderDeliveryAsync(
+                    conn, tx, salesOrderId, request.DeliveryAddress, request.LocationId, entryBy, now, isNewSalesOrder: false);
             }
             else
             {
                 var numberCtx = new BiznessEventDocumentNumberService.GenerateContext(
-                    CompanyId: _settings.CompanyId,
+                    CompanyId: companyId,
                     LocationId: request.LocationId,
                     PaymentModeId: request.PaymentModeId,
                     BiznessEventTypeId: request.BiznessEventTypeId,
@@ -550,7 +605,7 @@ public class PosService(
                     InvoiceDiscountType = discountType,
                     InvoicedBy = approvedBy,
                     PreviousDues = previousDues,
-                    CompanyId = _settings.CompanyId,
+                    CompanyId = companyId,
                     LocationId = request.LocationId,
                     DateOFEntry = now,
                     InvoiceDate = invoiceDate,
@@ -562,6 +617,10 @@ public class PosService(
                     ProjectId = projectId,
                     OthersCharge = request.OthersCharge
                 }, tx);
+
+                // Always insert SalesOrder_Delivery on create (even if Delivery Address is blank).
+                await UpsertSalesOrderDeliveryAsync(
+                    conn, tx, salesOrderId, request.DeliveryAddress, request.LocationId, entryBy, now, isNewSalesOrder: true);
             }
 
             foreach (var deletedId in request.DeletedLineIds ?? [])
@@ -672,7 +731,7 @@ public class PosService(
                 foreach (var (detailId, line) in costTargets)
                 {
                     var unitCost = await PosStockService.ComputeLineUnitCostAsync(
-                        conn, tx, _settings.CompanyId, request.LocationId, line);
+                        conn, tx, companyId, request.LocationId, line);
 
                     await conn.ExecuteAsync(
                         """
@@ -689,7 +748,7 @@ public class PosService(
                 await PosStockService.ApplyEditStockAsync(
                     conn,
                     tx,
-                    _settings.CompanyId,
+                    companyId,
                     request.LocationId,
                     entryBy,
                     salesOrderNo,
@@ -710,7 +769,7 @@ public class PosService(
                 var unitCost = await PosStockService.ComputeLineUnitCostAsync(
                     conn,
                     tx,
-                    _settings.CompanyId,
+                    companyId,
                     request.LocationId,
                     line);
 
@@ -729,7 +788,7 @@ public class PosService(
                 await PosStockService.DeductForInvoiceAsync(
                     conn,
                     tx,
-                    _settings.CompanyId,
+                    companyId,
                     request.LocationId,
                     linesNeedingCostAndDeduct.Select(x => x.Line).ToList());
             }
@@ -786,7 +845,7 @@ public class PosService(
                     biznessEventTypeId: request.BiznessEventTypeId,
                     userId: entryBy,
                     locationId: request.LocationId,
-                    companyId: _settings.CompanyId,
+                    companyId: companyId,
                     projectId: projectId);
             }
 
@@ -795,7 +854,7 @@ public class PosService(
                 conn,
                 tx,
                 request,
-                _settings.CompanyId,
+                companyId,
                 buyerId,
                 salesOrderId,
                 invoiceNo,
@@ -806,6 +865,11 @@ public class PosService(
                 entryBy);
 
             await tx.CommitAsync();
+
+            if (!isEdit)
+            {
+                await invoiceNotificationService.TrySendNewInvoiceSmsAsync(companyId, buyerId, invoiceNo);
+            }
 
             return new SaveInvoiceResponse(
                 salesOrderId,
@@ -988,6 +1052,76 @@ public class PosService(
             new { SalesOrderDetailId = detailId, TaxId = VatTaxId, TaxAmount = vatAmount, DateOfEntry = now },
             new { SalesOrderDetailId = detailId, TaxId = AitTaxId, TaxAmount = aitAmount, DateOfEntry = now }
         }, tx);
+    }
+
+    private static async Task UpsertSalesOrderDeliveryAsync(
+        IDbConnection conn,
+        IDbTransaction tx,
+        Guid salesOrderId,
+        string? deliveryAddress,
+        long deliveryFromLocationId,
+        long deliveryBy,
+        DateTime now,
+        bool isNewSalesOrder)
+    {
+        // Keep blank address as empty string so a row is always persisted.
+        var address = (deliveryAddress ?? string.Empty).Trim();
+        if (address.Length > 500)
+            address = address[..500];
+
+        if (isNewSalesOrder)
+        {
+            await conn.ExecuteAsync("""
+                INSERT INTO SalesOrder_Delivery (
+                    SalesOrderId, DeliveryPending, DeliveryAddress, DeliveryChallanNo,
+                    DeliveryFromLocationId, DeliveryBy, DateOfEntry
+                ) VALUES (
+                    @SalesOrderId, 'Y', @DeliveryAddress, '',
+                    @DeliveryFromLocationId, @DeliveryBy, @DateOfEntry
+                )
+                """, new
+            {
+                SalesOrderId = salesOrderId,
+                DeliveryAddress = address,
+                DeliveryFromLocationId = deliveryFromLocationId,
+                DeliveryBy = deliveryBy,
+                DateOfEntry = now
+            }, tx);
+            return;
+        }
+
+        var updated = await conn.ExecuteAsync("""
+            UPDATE SalesOrder_Delivery
+            SET DeliveryAddress = @DeliveryAddress,
+                DeliveryFromLocationId = @DeliveryFromLocationId
+            WHERE SalesOrderId = @SalesOrderId
+            """, new
+        {
+            SalesOrderId = salesOrderId,
+            DeliveryAddress = address,
+            DeliveryFromLocationId = deliveryFromLocationId
+        }, tx);
+
+        // Older invoices may have no delivery row yet — create one on first address edit/save.
+        if (updated == 0)
+        {
+            await conn.ExecuteAsync("""
+                INSERT INTO SalesOrder_Delivery (
+                    SalesOrderId, DeliveryPending, DeliveryAddress, DeliveryChallanNo,
+                    DeliveryFromLocationId, DeliveryBy, DateOfEntry
+                ) VALUES (
+                    @SalesOrderId, 'Y', @DeliveryAddress, '',
+                    @DeliveryFromLocationId, @DeliveryBy, @DateOfEntry
+                )
+                """, new
+            {
+                SalesOrderId = salesOrderId,
+                DeliveryAddress = address,
+                DeliveryFromLocationId = deliveryFromLocationId,
+                DeliveryBy = deliveryBy,
+                DateOfEntry = now
+            }, tx);
+        }
     }
 
     private static async Task SaveSerialsAsync(
@@ -1205,9 +1339,11 @@ public class PosService(
         public string SalesOrderNo { get; set; } = string.Empty;
         public long BuyerId { get; set; }
         public string CustomerName { get; set; } = string.Empty;
+        public string? CustomerCode { get; set; }
         public string? Mobile { get; set; }
         public string? Address { get; set; }
         public string? Remarks { get; set; }
+        public string? DeliveryAddress { get; set; }
         public long? ReferenceId { get; set; }
         public long BiznessEventTypeId { get; set; }
         public long? ProjectId { get; set; }
@@ -1221,6 +1357,7 @@ public class PosService(
         public decimal OthersCharge { get; set; }
         public decimal GivenAmount { get; set; }
         public decimal TotalAmount { get; set; }
+        public decimal PreviousDues { get; set; }
     }
 
     private sealed class InvoiceDetailRow

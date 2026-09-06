@@ -70,6 +70,7 @@ export function InvoicePosPrintModal({
       invoiceNo: form.invoiceNo.trim(),
       companyId: posSession.companyId,
       locationId: form.locationId,
+      reportLedgerDue: true,
     });
   }, [open, form.invoiceNo, form.locationId, fetchContext]);
 
@@ -77,6 +78,7 @@ export function InvoicePosPrintModal({
     const ok = printHtmlElement(
       sheetRef.current,
       `Invoice ${form.invoiceNo.trim() || 'POS'}`,
+      { paper: 'A5' },
     );
     if (!ok) window.print();
   }, [form.invoiceNo]);
@@ -85,8 +87,8 @@ export function InvoicePosPrintModal({
 
   const rows = filledPrintLines(form.lines);
   const company = ctx?.company;
-  // Previous Due = ledger due loaded on customer select (frontend).
-  const previousDue = form.ledgerDue ?? 0;
+  // Previous Due = SP_PosSalesLedgerDue → TempLedgerDue.PreviousDue for this invoice.
+  const previousDue = ctx?.previousDue ?? 0;
   // Sales Amount = SalesOrder.TotalAmount from backend; fallback to current POS grand total.
   const salesAmount = ctx?.salesAmount ?? grandTotal;
   // Collected Amount = sum of approved (Approved='Y') collections against this InvoiceNo.
@@ -160,18 +162,26 @@ export function InvoicePosPrintModal({
                 {rows.length === 0 ? (
                   <tr><td colSpan={5} className="c" style={{ padding: 12 }}>—</td></tr>
                 ) : (
-                  rows.map((line, i) => (
-                    <tr key={line.id}>
-                      <td className="c">{i + 1}</td>
-                      <td className="l">
-                        <div className="posa5-prod">{line.productName}</div>
-                        <div className="posa5-wday">W. Day&nbsp;&nbsp;{line.warrantyDays || 0}</div>
-                      </td>
-                      <td className="c">{line.quantity}</td>
-                      <td className="r">{formatPrintMoney(line.unitPrice)}</td>
-                      <td className="r">{formatPrintMoney(lineGross(line))}</td>
-                    </tr>
-                  ))
+                  rows.map((line, i) => {
+                    const serials = (line.serials ?? [])
+                      .map((s) => s.serialNo?.trim())
+                      .filter(Boolean);
+                    return (
+                      <tr key={line.id}>
+                        <td className="c">{i + 1}</td>
+                        <td className="l">
+                          <div className="posa5-prod">{line.productName}</div>
+                          {serials.length > 0 ? (
+                            <div className="posa5-serials">{serials.join(', ')}</div>
+                          ) : null}
+                          <div className="posa5-wday">W. Day&nbsp;&nbsp;{line.warrantyDays || 0}</div>
+                        </td>
+                        <td className="c">{line.quantity}</td>
+                        <td className="r">{formatPrintMoney(line.unitPrice)}</td>
+                        <td className="r">{formatPrintMoney(lineGross(line))}</td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

@@ -12,6 +12,7 @@ public interface ILookupService
     Task<IReadOnlyList<ReferenceOptionDto>> GetReferencesAsync(long? companyId = null);
     Task<IReadOnlyList<BankOptionDto>> GetBanksAsync(long? companyId = null);
     Task<PosFeatureFlagsDto> GetPosFeatureFlagsAsync(long companyId, long securityUserId);
+    Task<bool> CanViewProductCostAsync(long securityUserId);
     Task<BankExpenseChargeDto?> GetBankExpenseChargeAsync(long bankId, long companyId);
     Task<IReadOnlyList<CardEmiDeductionDto>> GetCardEmiDeductionsAsync(long bankId);
     Task<IReadOnlyList<BiznessEventTypeOptionDto>> GetPosBiznessEventTypesAsync(long companyId, long locationId);
@@ -174,7 +175,36 @@ public class LookupService(IDbConnectionFactory db) : ILookupService
             PosMachineChargeFromBankSetup = await IsFeatureAllowedAsync(conn, companyId, "POSMachineChargeFromBankSetup"),
             // Both BRFeature PosSalesEdit AND SecurityMenu_User grant for POSNEW path are required.
             PosSalesEdit = posSalesEditFeature && hasPosEditMenu,
+            PosMultiplePriceSales = await IsFeatureAllowedAsync(conn, companyId, "PosMultiplePriceSales"),
+            CanViewProductCost = await CanViewProductCostAsync(conn, securityUserId),
+            RestrictedPaymentModeInPos = await IsFeatureAllowedAsync(conn, companyId, "RestrictedPaymentModeInPOS"),
         };
+    }
+
+    public async Task<bool> CanViewProductCostAsync(long securityUserId)
+    {
+        using var conn = db.CreateConnection();
+        return await CanViewProductCostAsync(conn, securityUserId);
+    }
+
+    private static async Task<bool> CanViewProductCostAsync(System.Data.IDbConnection conn, long securityUserId)
+    {
+        if (securityUserId <= 0)
+            return false;
+
+        var granted = await conn.ExecuteScalarAsync<int?>(
+            """
+            SELECT TOP 1 1
+            FROM SecurityUser su
+            INNER JOIN Department d ON d.DepartmentId = su.DepartmentId
+            INNER JOIN [Level] lv ON lv.LevelId = su.LevelId
+            WHERE su.SecurityUserId = @SecurityUserId
+              AND UPPER(LTRIM(RTRIM(ISNULL(d.Name, '')))) = N'ADMINISTRATION'
+              AND UPPER(LTRIM(RTRIM(ISNULL(lv.Name, '')))) = N'ADMINISTRATOR'
+            """,
+            new { SecurityUserId = securityUserId });
+
+        return granted == 1;
     }
 
     private static async Task<bool> HasSecurityMenuPermissionAsync(

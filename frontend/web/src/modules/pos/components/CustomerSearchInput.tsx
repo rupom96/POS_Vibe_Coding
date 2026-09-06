@@ -13,7 +13,28 @@ import { useAutocompleteMenu } from '../utils/useAutocompleteMenu';
 
 const BROWSE_LIMIT = 5000;
 
-export type CustomerSearchVariant = 'name' | 'phone';
+export type CustomerSearchVariant = 'name' | 'phone' | 'code';
+
+function displayLabel(customer: CustomerSearchResult, variant: CustomerSearchVariant) {
+  if (variant === 'phone') return customer.phone ?? '';
+  if (variant === 'code') return customer.code ?? '';
+  return customer.buyerName ?? customer.name ?? '';
+}
+
+function optionTitle(customer: CustomerSearchResult, variant: CustomerSearchVariant) {
+  if (variant === 'code') return customer.code?.trim() || '—';
+  return customer.buyerName ?? customer.name ?? '—';
+}
+
+function optionMeta(customer: CustomerSearchResult, variant: CustomerSearchVariant) {
+  if (variant === 'code') {
+    return [customer.buyerName ?? customer.name, customer.phone].filter(Boolean).join(' · ') || '—';
+  }
+  if (variant === 'phone') {
+    return [customer.phone, customer.address].filter(Boolean).join(' · ') || '—';
+  }
+  return [customer.phone, customer.address].filter(Boolean).join(' · ') || '—';
+}
 
 export const CustomerSearchInput = memo(function CustomerSearchInput({
   value,
@@ -120,11 +141,7 @@ export const CustomerSearchInput = memo(function CustomerSearchInput({
 
   const pick = useCallback((customer: CustomerSearchResult) => {
     pickedRef.current = true;
-    setDraft(
-      variant === 'phone'
-        ? (customer.phone ?? '')
-        : (customer.buyerName ?? customer.name ?? ''),
-    );
+    setDraft(displayLabel(customer, variant));
     setOpen(false);
     setOptions([]);
     setHighlight(-1);
@@ -223,8 +240,14 @@ export const CustomerSearchInput = memo(function CustomerSearchInput({
     const label = (value ?? '').trim().toLowerCase();
     if (!label) return false;
     if (variant === 'phone') return (c.phone ?? '').trim().toLowerCase() === label;
+    if (variant === 'code') return (c.code ?? '').trim().toLowerCase() === label;
     return (c.buyerName ?? c.name ?? '').trim().toLowerCase() === label;
   };
+
+  const placeholder =
+    variant === 'phone' ? 'Search mobile no...'
+    : variant === 'code' ? 'Search code...'
+    : 'Search customer...';
 
   const menu = open && !disabled && options.length > 0 ? (
     <ul ref={menuRef} className="cust-ac-list cust-ac-list--portal" role="listbox" style={menuStyle}>
@@ -239,8 +262,8 @@ export const CustomerSearchInput = memo(function CustomerSearchInput({
             onMouseEnter={() => setHighlight(idx)}
             onClick={() => pick(c)}
           >
-            <span className="cust-ac-name">{c.buyerName ?? c.name}</span>
-            <span className="cust-ac-meta">{[c.phone, c.address].filter(Boolean).join(' · ') || '—'}</span>
+            <span className="cust-ac-name">{optionTitle(c, variant)}</span>
+            <span className="cust-ac-meta">{optionMeta(c, variant)}</span>
             {(c.employeeName) && (
               <span className="cust-ac-emp">{c.employeeName}</span>
             )}
@@ -265,12 +288,12 @@ export const CustomerSearchInput = memo(function CustomerSearchInput({
     >
       <input
         ref={inputRef}
-        className={`fv${variant === 'phone' ? ' mono' : ''}`}
+        className={`fv${variant === 'phone' || variant === 'code' ? ' mono' : ''}`}
         value={draft}
         autoComplete="off"
         disabled={disabled}
         readOnly={disabled}
-        placeholder={variant === 'phone' ? 'Search mobile no...' : 'Search customer...'}
+        placeholder={placeholder}
         onChange={handleChange}
         onFocus={handleFocus}
         onBlur={handleBlur}

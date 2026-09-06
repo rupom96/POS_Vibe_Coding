@@ -10,7 +10,7 @@ export const INVOICE_PRINT_CSS = `
     color: #000;
     background: #fff;
     width: 100%;
-    max-width: 170mm;
+    max-width: 136mm;
     margin: 0 auto;
     font-size: 10px;
     line-height: 1.25;
@@ -389,17 +389,37 @@ export const INVOICE_PRINT_CSS = `
   .rprm-footer .r { text-align: right; }
 
   .no-print { display: none !important; }
+`;
+
+export type PrintPaper = 'A4' | 'A5';
+
+function paperPrintCss(paper: PrintPaper): string {
+  if (paper === 'A5') {
+    return `
+  body.paper-a5 { padding: 4mm 5mm; }
+  @media print {
+    body { padding: 4mm 5mm; }
+    @page { size: A5 portrait; margin: 6mm; }
+  }`;
+  }
+  return `
   @media print {
     body { padding: 6mm 8mm; }
     @page { size: A4; margin: 8mm; }
-  }
-`;
+  }`;
+}
 
 /** Opens a print-ready window from a DOM node (outerHTML) and triggers the print dialog. */
-export function printHtmlElement(source: HTMLElement | null, title: string): boolean {
+export function printHtmlElement(
+  source: HTMLElement | null,
+  title: string,
+  options?: { paper?: PrintPaper },
+): boolean {
   if (!source) return false;
 
-  const win = window.open('', '_blank', 'width=900,height=1100');
+  const paper = options?.paper ?? 'A4';
+  const features = paper === 'A5' ? 'width=620,height=880' : 'width=900,height=1100';
+  const win = window.open('', '_blank', features);
   if (!win) return false;
 
   try {
@@ -414,9 +434,9 @@ export function printHtmlElement(source: HTMLElement | null, title: string): boo
 <head>
   <meta charset="utf-8" />
   <title>${safeTitle}</title>
-  <style>${INVOICE_PRINT_CSS}</style>
+  <style>${INVOICE_PRINT_CSS}${paperPrintCss(paper)}</style>
 </head>
-<body>
+<body class="paper-${paper.toLowerCase()}">
   ${source.outerHTML}
 </body>
 </html>`;

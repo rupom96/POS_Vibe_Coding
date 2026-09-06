@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/sync-product-scan-manifest.mjs && vite",
+    "dev": "node scripts/sync-product-scan-manifest.mjs && vite --mode http",
     "build": "node scripts/sync-product-scan-manifest.mjs && tsc -b && vite build",
     "lint": "oxlint",
     "test": "vitest run",

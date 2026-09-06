@@ -1,8 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { ProductSearchInput, type ProductSearchInputHandle } from '../ProductSearchInput';
 import type { InvoiceLine, ProductSearchResult } from '../../types';
 import { calcLineTotal, formatNumber, isLineFilled, isServiceProduct } from '../../utils/format';
+import {
+  findIncompleteQtyOrPrice,
+  type IncompleteQtyPrice,
+  type IncompleteQtyPriceField,
+} from '../../utils/incompleteQtyPrice';
 
 function hasProduct(line: InvoiceLine) {
   return !!line.productId;
@@ -20,26 +25,16 @@ type PendingFocus =
   | { kind: 'product-after'; lineId: string }
   | null;
 
-export const PosItemsTable = memo(function PosItemsTable({
-  lines,
-  locationId,
-  companyId,
-  readOnly = false,
-  onLineChange,
-  onMarkDeleted,
-  onEnsureTrailingRow,
-  onProductSelect,
-  onProductNameCommit,
-  onProductFocus,
-  onProductBlur,
-  onQuantityBlur,
-  onUnitPriceBlur,
-  onSelectProductFromTree,
-  onRowHover,
-  onOpenSerial,
-  onClear,
-  onFocusSave,
-}: {
+export type PosItemsTableHandle = {
+  /** Focus first empty product cell (used after customer select). */
+  focusFirstEmptyProduct: () => void;
+  /** Scroll a row into view and focus qty or unit price. */
+  focusLineField: (lineId: string, field: IncompleteQtyPriceField) => void;
+  /** After a product is applied (tree/scan), scroll the row and focus qty. */
+  focusAfterProductApplied: (lineId: string) => void;
+};
+
+export const PosItemsTable = memo(forwardRef<PosItemsTableHandle, {
   lines: InvoiceLine[];
   locationId: number;
   companyId: number;
@@ -59,10 +54,38 @@ export const PosItemsTable = memo(function PosItemsTable({
   onClear: () => void;
   /** Focus the POS Save button (actual DOM focus). */
   onFocusSave?: () => void;
-}) {
+  /** When true, product search does not hide products already on other rows. */
+  allowDuplicateProducts?: boolean;
+  onIncompleteRequired?: (hit: IncompleteQtyPrice) => void;
+}>(function PosItemsTable({
+  lines,
+  locationId,
+  companyId,
+  readOnly = false,
+  onLineChange,
+  onMarkDeleted,
+  onEnsureTrailingRow,
+  onProductSelect,
+  onProductNameCommit,
+  onProductFocus,
+  onProductBlur,
+  onQuantityBlur,
+  onUnitPriceBlur,
+  onSelectProductFromTree,
+  onRowHover,
+  onOpenSerial,
+  onClear,
+  onFocusSave,
+  allowDuplicateProducts = false,
+  onIncompleteRequired,
+}, ref) {
   const itemCount = useMemo(() => lines.filter(isLineFilled).length, [lines]);
   const selectedProductIdsByLine = useMemo(() => {
     const map = new Map<string, number[]>();
+    if (allowDuplicateProducts) {
+      for (const line of lines) map.set(line.id, []);
+      return map;
+    }
     const selected = lines
       .filter((l) => l.rowStatus !== 'deleted' && l.productId)
       .map((l) => ({ id: l.id, productId: l.productId! }));
@@ -74,13 +97,14 @@ export const PosItemsTable = memo(function PosItemsTable({
       );
     }
     return map;
-  }, [lines]);
+  }, [allowDuplicateProducts, lines]);
 
   const [contextMenu, setContextMenu] = useState<{ lineId: string; x: number; y: number } | null>(null);
   const productRefs = useRef(new Map<string, ProductSearchInputHandle | null>());
   const qtyRefs = useRef(new Map<string, HTMLInputElement | null>());
   const priceRefs = useRef(new Map<string, HTMLInputElement | null>());
   const pendingFocus = useRef<PendingFocus>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
@@ -172,6 +196,59 @@ export const PosItemsTable = memo(function PosItemsTable({
     });
   }, []);
 
+  const scrollToLine = useCallback((lineId: string) => {
+    const row = scrollRef.current?.querySelector<HTMLTableRowElement>(`tr[data-line-id="${lineId}"]`);
+    row?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, []);
+
+  const focusLineField = useCallback((lineId: string, field: IncompleteQtyPriceField) => {
+    scrollToLine(lineId);
+    const line = visibleLines.find((l) => l.id === lineId);
+    if (field === 'quantity') {
+      if (line?.isSerial && !(Number(line.quantity) > 0)) {
+        onOpenSerial(lineId);
+      }
+      focusQty(lineId);
+      return;
+    }
+    focusUnitPrice(lineId);
+  }, [focusQty, focusUnitPrice, onOpenSerial, scrollToLine, visibleLines]);
+
+  const blockIncomplete = useCallback((hit: IncompleteQtyPrice) => {
+    onIncompleteRequired?.(hit);
+    window.requestAnimationFrame(() => focusLineField(hit.line.id, hit.field));
+  }, [focusLineField, onIncompleteRequired]);
+
+  const incompleteBefore = useCallback((lineId: string) => (
+    findIncompleteQtyOrPrice(visibleLines, { beforeLineId: lineId })
+  ), [visibleLines]);
+
+  useImperativeHandle(ref, () => ({
+    focusFirstEmptyProduct: () => {
+      if (readOnly) return;
+      const target =
+        visibleLines.find((l) => !hasProduct(l))
+        ?? visibleLines[0];
+      if (!target) return;
+      const hit = incompleteBefore(target.id);
+      if (hit) {
+        blockIncomplete(hit);
+        return;
+      }
+      focusProduct(target.id);
+    },
+    focusLineField: (lineId, field) => {
+      if (readOnly) return;
+      focusLineField(lineId, field);
+    },
+    focusAfterProductApplied: (lineId) => {
+      if (readOnly) return;
+      pendingFocus.current = { kind: 'qty', lineId };
+      scrollToLine(lineId);
+      focusQty(lineId);
+    },
+  }), [blockIncomplete, focusLineField, focusProduct, focusQty, incompleteBefore, readOnly, scrollToLine, visibleLines]);
+
   // Resolve deferred focus after product apply / trailing row appears.
   useEffect(() => {
     const pending = pendingFocus.current;
@@ -181,6 +258,7 @@ export const PosItemsTable = memo(function PosItemsTable({
       const line = visibleLines.find((l) => l.id === pending.lineId);
       if (!line?.productId) return;
       pendingFocus.current = null;
+      scrollToLine(pending.lineId);
       focusQty(pending.lineId);
       return;
     }
@@ -193,47 +271,84 @@ export const PosItemsTable = memo(function PosItemsTable({
       pendingFocus.current = null;
       focusProduct(next.id);
     }
-  }, [visibleLines, focusQty, focusProduct, readOnly]);
+  }, [visibleLines, focusQty, focusProduct, readOnly, scrollToLine]);
 
   const handleProductSelected = useCallback(async (lineId: string, product: ProductSearchResult) => {
     if (readOnly) return;
+    const hit = incompleteBefore(lineId);
+    if (hit) {
+      blockIncomplete(hit);
+      return;
+    }
     pendingFocus.current = { kind: 'qty', lineId };
     try {
       await onProductSelect(lineId, product);
     } finally {
       onEnsureTrailingRow();
+      scrollToLine(lineId);
     }
-  }, [onEnsureTrailingRow, onProductSelect, readOnly]);
+  }, [blockIncomplete, incompleteBefore, onEnsureTrailingRow, onProductSelect, readOnly, scrollToLine]);
 
   const handleQtyEnter = useCallback((lineId: string, e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter' || readOnly) return;
     e.preventDefault();
     e.stopPropagation();
+    const qty = Number(e.currentTarget.value);
+    if (!(qty > 0)) {
+      const idx = visibleLines.findIndex((l) => l.id === lineId);
+      const next = visibleLines[idx + 1];
+      const hit = findIncompleteQtyOrPrice(
+        visibleLines,
+        next ? { beforeLineId: next.id } : undefined,
+      );
+      if (hit) {
+        blockIncomplete(hit);
+        return;
+      }
+    }
     focusUnitPrice(lineId);
-  }, [focusUnitPrice, readOnly]);
+  }, [blockIncomplete, focusUnitPrice, readOnly, visibleLines]);
 
   const handlePriceEnter = useCallback((lineId: string, e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter' || readOnly) return;
     e.preventDefault();
     e.stopPropagation();
+    const idx = visibleLines.findIndex((l) => l.id === lineId);
+    const next = visibleLines[idx + 1];
+    const selfHit = findIncompleteQtyOrPrice(
+      visibleLines,
+      next ? { beforeLineId: next.id } : undefined,
+    );
+    if (selfHit) {
+      blockIncomplete(selfHit);
+      return;
+    }
     pendingFocus.current = { kind: 'product-after', lineId };
     onEnsureTrailingRow();
-    // If trailing row already exists, effect runs on next paint with current visibleLines.
     window.requestAnimationFrame(() => {
       const idx = visibleLines.findIndex((l) => l.id === lineId);
       const next = visibleLines[idx + 1];
       if (next) {
         pendingFocus.current = null;
+        const beforeNext = findIncompleteQtyOrPrice(visibleLines, { beforeLineId: next.id });
+        if (beforeNext) {
+          blockIncomplete(beforeNext);
+          return;
+        }
         focusProduct(next.id);
       }
-      // else pendingFocus waits for ensureTrailingEmptyRow re-render
     });
-  }, [focusProduct, onEnsureTrailingRow, readOnly, visibleLines]);
+  }, [blockIncomplete, focusProduct, onEnsureTrailingRow, readOnly, visibleLines]);
 
-  const handleEmptyProductEnter = useCallback(() => {
+  const handleEmptyProductEnter = useCallback((lineId: string) => {
     if (readOnly) return;
+    const hit = incompleteBefore(lineId);
+    if (hit) {
+      blockIncomplete(hit);
+      return;
+    }
     onFocusSave?.();
-  }, [onFocusSave, readOnly]);
+  }, [blockIncomplete, incompleteBefore, onFocusSave, readOnly]);
 
   return (
     <div className="ugrid">
@@ -252,22 +367,22 @@ export const PosItemsTable = memo(function PosItemsTable({
         </button>
       </div>
 
-      <div className="ug-scroll">
+      <div ref={scrollRef} className="ug-scroll">
         <table className="ug-tbl">
           <thead>
             <tr>
               <th className="ug-th" style={{ width: 30 }}>#</th>
-              <th className="ug-th" style={{ minWidth: 210 }}>Product / Barcode</th>
-              <th className="ug-th" style={{ minWidth: 82 }}>Model</th>
-              <th className="ug-th" style={{ minWidth: 82 }}>Stock</th>
-              <th className="ug-th" style={{ minWidth: 64 }}>Unit</th>
-              <th className="ug-th" style={{ minWidth: 55 }}>Qty</th>
-              <th className="ug-th" style={{ minWidth: 92 }}>Unit Price (Tk)</th>
-              <th className="ug-th" style={{ minWidth: 78 }}>Disc/Unit (Tk)</th>
-              <th className="ug-th" style={{ minWidth: 72 }}>Wty (Days)</th>
-              <th className="ug-th" style={{ minWidth: 54 }}>VAT %</th>
-              <th className="ug-th" style={{ minWidth: 54 }}>Tax %</th>
-              <th className="ug-th" style={{ minWidth: 105 }}>Total (Tk)</th>
+              <th className="ug-th" style={{ minWidth: 240 }}>Product / Barcode</th>
+              <th className="ug-th" style={{ minWidth: 64 }}>Model</th>
+              <th className="ug-th" style={{ minWidth: 56 }}>Stock</th>
+              <th className="ug-th" style={{ minWidth: 48 }}>Unit</th>
+              <th className="ug-th" style={{ minWidth: 42 }}>Qty</th>
+              <th className="ug-th" style={{ minWidth: 68 }}>Unit Price (Tk)</th>
+              <th className="ug-th" style={{ minWidth: 58 }}>Disc/Unit (Tk)</th>
+              <th className="ug-th" style={{ minWidth: 52 }}>Wty (Days)</th>
+              <th className="ug-th" style={{ minWidth: 40 }}>VAT %</th>
+              <th className="ug-th" style={{ minWidth: 40 }}>Tax %</th>
+              <th className="ug-th" style={{ minWidth: 72 }}>Total (Tk)</th>
               <th className="ug-th" style={{ width: 34 }} />
             </tr>
           </thead>
@@ -285,9 +400,17 @@ export const PosItemsTable = memo(function PosItemsTable({
               return (
                 <tr
                   key={line.id}
+                  data-line-id={line.id}
                   className={`ug-tr ${rowStatusClass(line.rowStatus)}${filled ? '' : ' ug-tr-empty'}`}
                   onMouseEnter={(e) => filled && line.productId && onRowHover(line.id, e.currentTarget.getBoundingClientRect())}
                   onMouseLeave={() => onRowHover(null)}
+                  onMouseDown={(e) => {
+                    if (readOnly || filled) return;
+                    const hit = incompleteBefore(line.id);
+                    if (!hit) return;
+                    e.preventDefault();
+                    blockIncomplete(hit);
+                  }}
                 >
                   <td className="ug-td ug-td-sl">{sl ?? ''}</td>
                   <td
@@ -309,7 +432,16 @@ export const PosItemsTable = memo(function PosItemsTable({
                           excludeProductIds={selectedProductIdsByLine.get(line.id)}
                           selectedProductId={line.productId}
                           disabled={disabled}
-                          onFocus={() => onProductFocus?.(line.id)}
+                          onFocus={() => {
+                            if (!filled && !readOnly) {
+                              const hit = incompleteBefore(line.id);
+                              if (hit) {
+                                blockIncomplete(hit);
+                                return;
+                              }
+                            }
+                            onProductFocus?.(line.id);
+                          }}
                           onBlur={() => onProductBlur?.(line.id)}
                           onNameCommit={(name) => {
                             if (readOnly) return;
@@ -319,7 +451,7 @@ export const PosItemsTable = memo(function PosItemsTable({
                           onSelect={(product) => {
                             void handleProductSelected(line.id, product);
                           }}
-                          onEmptyEnter={handleEmptyProductEnter}
+                          onEmptyEnter={() => handleEmptyProductEnter(line.id)}
                           onEnterWithSelection={() => focusQty(line.id)}
                         />
                         {filled && line.isSerial && (
@@ -416,7 +548,19 @@ export const PosItemsTable = memo(function PosItemsTable({
                   </td>
                   <td className="ug-td">
                     {filled ? (
-                      <input className="ug-inp ug-mono" value={line.warrantyDays || ''} readOnly />
+                      <input
+                        className="ug-inp ug-mono"
+                        type="number"
+                        min={0}
+                        disabled={disabled}
+                        value={line.warrantyDays || ''}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          onLineChange(line.id, {
+                            warrantyDays: Number.isFinite(v) && v >= 0 ? v : 0,
+                          });
+                        }}
+                      />
                     ) : null}
                   </td>
                   <td className="ug-td">
@@ -485,4 +629,4 @@ export const PosItemsTable = memo(function PosItemsTable({
       )}
     </div>
   );
-});
+}));

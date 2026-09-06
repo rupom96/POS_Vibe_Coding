@@ -25,6 +25,8 @@ public class ProductDetailDto
     public decimal? CostMin { get; set; }
     public decimal? CostMax { get; set; }
     public decimal? CostAvg { get; set; }
+    /** True when at least one CurrentStock row exists for this product (qty may be zero). */
+    public bool HasCurrentStock { get; set; }
     public string? ProductType { get; set; }
     public bool HasPriceSetup { get; set; }
 }

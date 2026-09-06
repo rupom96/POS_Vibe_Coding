@@ -72,6 +72,31 @@ function stripTokenAndLandOnPos(): void {
   window.history.replaceState(null, '', next);
 }
 
+function normalizeLoginSession(raw: unknown): LoginSession {
+  const data = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const pick = (camel: string, pascal: string) => data[camel] ?? data[pascal];
+  return {
+    companyId: Number(pick('companyId', 'CompanyId')) || 0,
+    companyName: String(pick('companyName', 'CompanyName') ?? ''),
+    locationId: Number(pick('locationId', 'LocationId')) || 0,
+    locationName: String(pick('locationName', 'LocationName') ?? ''),
+    securityUserId: Number(pick('securityUserId', 'SecurityUserId')) || 0,
+    securityUserName: String(pick('securityUserName', 'SecurityUserName') ?? ''),
+    employeeId: Number(pick('employeeId', 'EmployeeId')) || 0,
+    employeeName: String(pick('employeeName', 'EmployeeName') ?? ''),
+  };
+}
+
+function isValidLoginSession(session: LoginSession): boolean {
+  return session.companyId > 0 && session.locationId > 0 && session.securityUserId > 0;
+}
+
+function clearEmbeddedSessionCache(): void {
+  sessionStorage.removeItem(EMBED_FLAG_KEY);
+  sessionStorage.removeItem(EMBED_SESSION_KEY);
+  sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+}
+
 function persistEmbeddedSession(session: LoginSession, accessToken?: string): void {
   sessionStorage.setItem(EMBED_FLAG_KEY, '1');
   sessionStorage.setItem(EMBED_SESSION_KEY, JSON.stringify(session));
@@ -85,23 +110,20 @@ function restoreEmbeddedSession(): LoginSession | null {
   const raw = sessionStorage.getItem(EMBED_SESSION_KEY);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as LoginSession;
+    const session = normalizeLoginSession(JSON.parse(raw));
+    if (!isValidLoginSession(session)) {
+      clearEmbeddedSessionCache();
+      return null;
+    }
+    return session;
   } catch {
+    clearEmbeddedSessionCache();
     return null;
   }
 }
 
 function mapBr2Session(data: Br2SessionResponse): LoginSession {
-  return {
-    companyId: Number(data.companyId) || 0,
-    companyName: data.companyName ?? '',
-    locationId: Number(data.locationId) || 0,
-    locationName: data.locationName ?? '',
-    securityUserId: Number(data.securityUserId) || 0,
-    securityUserName: data.securityUserName ?? '',
-    employeeId: Number(data.employeeId) || 0,
-    employeeName: data.employeeName ?? '',
-  };
+  return normalizeLoginSession(data);
 }
 
 async function loadApiSettings(): Promise<ApiSettings> {
@@ -121,7 +143,7 @@ async function loadStaticLoginSession(): Promise<LoginSession> {
   if (!sessionRes.ok) {
     throw new Error(`Failed to load StaticLoginSession.json (${sessionRes.status})`);
   }
-  return (await sessionRes.json()) as LoginSession;
+  return normalizeLoginSession(await sessionRes.json());
 }
 
 async function loadBr2LoginSession(apiBase: string, token: string): Promise<LoginSession> {
@@ -144,7 +166,7 @@ async function loadBr2LoginSession(apiBase: string, token: string): Promise<Logi
   }
 
   const session = mapBr2Session(body);
-  if (session.companyId <= 0 || session.locationId <= 0 || session.securityUserId <= 0) {
+  if (!isValidLoginSession(session)) {
     throw new Error('BR2 session response is missing required company/location/user fields');
   }
 
@@ -171,7 +193,11 @@ export function getApiBaseUrl(): string {
   if (!loaded) {
     throw new Error('Runtime config is not loaded yet.');
   }
-  return apiSettings.baseUrl.replace(/\/+$/, '');
+  const raw = apiSettings.baseUrl.replace(/\/+$/, '');
+  if (raw.startsWith('/')) {
+    return `${window.location.origin.replace(/\/+$/, '')}${raw}`;
+  }
+  return raw;
 }
 
 export function getScanRelayHubUrl(): string {
@@ -201,7 +227,7 @@ export function getAppBaseUrl(): string {
   }
 
   try {
-    const apiUrl = new URL(getApiBaseUrl());
+    const apiUrl = new URL(getApiBaseUrl(), window.location.origin);
     const port = window.location.port || '5173';
     return `${apiUrl.protocol}//${apiUrl.hostname}:${port}`;
   } catch {
@@ -227,6 +253,10 @@ export async function loadRuntimeConfig(): Promise<void> {
       loginSession = await loadStaticLoginSession();
       embeddedMode = false;
     }
+  }
+
+  if (!isValidLoginSession(loginSession)) {
+    throw new Error('Login session is missing company, location, or user.');
   }
 
   loaded = true;

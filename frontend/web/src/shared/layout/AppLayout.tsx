@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { isEmbeddedMode } from '../../config/runtimeConfig';
 import { posSession } from '../../config/posSession';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
-import { toggleNav, toggleTheme } from '../../app/uiSlice';
+import { toggleNav, toggleTheme, setNavOpen } from '../../app/uiSlice';
 import { mainNavItems } from './navigation';
 import '../styles/appLayout.css';
 
@@ -12,18 +12,29 @@ export function AppLayout() {
   const theme = useAppSelector((s) => s.ui.theme);
   const navOpen = useAppSelector((s) => s.ui.navOpen);
   const location = useLocation();
-  const isPos = location.pathname.startsWith('/pos');
+  const isFlushPage =
+    location.pathname.startsWith('/pos') || location.pathname.startsWith('/sales-return');
   const embedded = isEmbeddedMode();
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 768px)');
+    const sync = () => {
+      if (mq.matches) dispatch(setNavOpen(false));
+    };
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, [dispatch]);
+
   if (embedded) {
     return (
       <div className="app-shell app-shell--embedded">
         <main className="app-content app-content--embedded">
-          <div className={`app-page${isPos ? ' app-page--flush' : ''}`}>
+          <div className={`app-page${isFlushPage ? ' app-page--flush' : ''}`}>
             <Outlet />
           </div>
         </main>
@@ -33,6 +44,15 @@ export function AppLayout() {
 
   return (
     <div className="app-shell">
+      {navOpen ? (
+        <button
+          type="button"
+          className="app-nav-backdrop"
+          aria-label="Close navigation"
+          onClick={() => dispatch(setNavOpen(false))}
+        />
+      ) : null}
+
       <aside className={`app-sidebar${navOpen ? '' : ' collapsed'}`}>
         <div className="app-sidebar-brand">
           <div className="brand-icon">D</div>
@@ -99,8 +119,8 @@ export function AppLayout() {
           </div>
         </header>
 
-        <main className={`app-content${isPos ? '' : ''}`}>
-          <div className={`app-page${isPos ? ' app-page--flush' : ''}`}>
+        <main className="app-content">
+          <div className={`app-page${isFlushPage ? ' app-page--flush' : ''}`}>
             <Outlet />
           </div>
         </main>

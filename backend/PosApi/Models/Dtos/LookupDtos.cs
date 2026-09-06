@@ -43,6 +43,9 @@ public class PosFeatureFlagsDto
     public bool CashBackOffer { get; set; }
     public bool PosMachineChargeFromBankSetup { get; set; }
     public bool PosSalesEdit { get; set; }
+    public bool PosMultiplePriceSales { get; set; }
+    public bool CanViewProductCost { get; set; }
+    public bool RestrictedPaymentModeInPos { get; set; }
 }
 
 public class BankExpenseChargeDto

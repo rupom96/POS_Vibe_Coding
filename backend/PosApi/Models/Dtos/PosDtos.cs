@@ -51,12 +51,14 @@ public record SaveInvoiceCardPaymentRequest(
     bool Confirmed);
 
 public record SaveInvoiceRequest(
+    long CompanyId,
     Guid? SalesOrderId,
     long? BuyerId,
     string? CustomerName,
     string? Mobile,
     string? Address,
     string? Remarks,
+    string? DeliveryAddress,
     long LocationId,
     long PaymentModeId,
     long? SubPaymentModeId,
@@ -162,7 +164,9 @@ public record InvoicePrintContextDto(
     string? VerifiedByName,
     decimal CollectedAmount,
     /// <summary>SalesOrder.TotalAmount for the invoice (Sales Amount on print).</summary>
-    decimal SalesAmount);
+    decimal SalesAmount,
+    /// <summary>TempLedgerDue.PreviousDue after SP_PosSalesLedgerDue (Invoice Report / Invoice POS).</summary>
+    decimal? PreviousDue = null);
 
 public record LoadedInvoiceDto(
     Guid SalesOrderId,
@@ -170,9 +174,11 @@ public record LoadedInvoiceDto(
     string SalesOrderNo,
     long BuyerId,
     string CustomerName,
+    string? CustomerCode,
     string? Mobile,
     string? Address,
     string? Remarks,
+    string? DeliveryAddress,
     long? ReferenceId,
     long BiznessEventTypeId,
     long? ProjectId,
@@ -187,6 +193,8 @@ public record LoadedInvoiceDto(
     decimal OthersCharge,
     decimal GivenAmount,
     decimal GrandTotal,
+    /// <summary>Buyer ledger due captured at save — SalesOrder.PreviousDues.</summary>
+    decimal PreviousDues,
     SaveInvoiceMixedPaymentRequest? MixedPayment,
     SaveInvoiceCardPaymentRequest? CardPayment,
     IReadOnlyList<LoadedInvoiceLineDto> Lines);

@@ -7,7 +7,9 @@ import {
 } from '@reduxjs/toolkit/query/react';
 import { appendScopeParams, type PosScope } from '../../../config/posSession';
 import { getApiBaseUrl } from '../../../config/runtimeConfig';
+import { sessionLogHeaders } from '../../../shared/utils/clientActivityLog';
 import type {
+  BuyerPreferredPaymentMode,
   Customer,
   CustomerSearchResult,
   CustomerStats,
@@ -45,7 +47,20 @@ const dynamicBaseQuery: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQueryE
   args,
   api,
   extraOptions,
-) => fetchBaseQuery({ baseUrl: getApiBaseUrl() })(args, api, extraOptions);
+) => {
+  const url = typeof args === 'string' ? args : (args.url ?? '');
+  const method = typeof args === 'string' ? 'GET' : (args.method ?? 'GET');
+  return fetchBaseQuery({
+    baseUrl: getApiBaseUrl(),
+    prepareHeaders: (headers) => {
+      const extra = sessionLogHeaders(method, url);
+      for (const [key, value] of Object.entries(extra)) {
+        if (value) headers.set(key, value);
+      }
+      return headers;
+    },
+  })(args, api, extraOptions);
+};
 
 export type { PosScope };
 
@@ -190,6 +205,9 @@ export const posApi = createApi({
         return `/customers/${buyerId}/ledger-due${qs ? `?${qs}` : ''}`;
       },
     }),
+    getCustomerPreferredPaymentMode: builder.query<BuyerPreferredPaymentMode, number>({
+      query: (buyerId) => `/customers/${buyerId}/preferred-payment-mode`,
+    }),
     createCustomer: builder.mutation<Customer, CreateCustomerRequest>({
       query: (body) => ({ url: '/customers', method: 'POST', body }),
       invalidatesTags: ['Customers'],
@@ -222,6 +240,7 @@ export const posApi = createApi({
         const params = buyerId ? `?buyerId=${buyerId}` : '';
         return `/products/${productId}/price-history${params}`;
       },
+      keepUnusedDataFor: 0,
     }),
     getProductPrice: builder.query<
       ProductPriceQuote | null,
@@ -340,10 +359,16 @@ export const posApi = createApi({
     }),
     getInvoicePrintContext: builder.query<
       InvoicePrintContext,
-      { invoiceNo: string; companyId: number; locationId: number }
+      { invoiceNo: string; companyId: number; locationId: number; reportLedgerDue?: boolean }
     >({
-      query: ({ invoiceNo, companyId, locationId }) =>
-        `/pos/invoices/${encodeURIComponent(invoiceNo)}/print-context?companyId=${companyId}&locationId=${locationId}`,
+      query: ({ invoiceNo, companyId, locationId, reportLedgerDue }) => {
+        const params = new URLSearchParams({
+          companyId: String(companyId),
+          locationId: String(locationId),
+        });
+        if (reportLedgerDue) params.set('reportLedgerDue', 'true');
+        return `/pos/invoices/${encodeURIComponent(invoiceNo)}/print-context?${params}`;
+      },
     }),
     multiScan: builder.query<MultiScanResult, { q: string; companyId?: number; locationId?: number }>({
       query: ({ q, companyId, locationId }) => {
@@ -388,6 +413,7 @@ export const {
   useGetCustomerStatsQuery,
   useLazyGetCustomerStatsQuery,
   useLazyGetCustomerLedgerDueQuery,
+  useLazyGetCustomerPreferredPaymentModeQuery,
   useCreateCustomerMutation,
   useSearchProductsQuery,
   useLazySearchProductsQuery,

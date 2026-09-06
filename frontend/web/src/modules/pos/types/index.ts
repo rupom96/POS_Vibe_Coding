@@ -84,6 +84,17 @@ export interface PosFeatureFlags {
   posMachineChargeFromBankSetup: boolean;
   /** True only when BRFeature PosSalesEdit is on AND SecurityMenu_User grants POSNEW edit path. */
   posSalesEdit: boolean;
+  /** When true, same product may appear on multiple invoice lines (merge offered on same price). */
+  posMultiplePriceSales: boolean;
+  /** Administration department + Administrator level only. */
+  canViewProductCost: boolean;
+  /** When true, pay mode comes from Buyer_AgreementCredit.PreferredPaymentModeId for the selected customer. */
+  restrictedPaymentModeInPos: boolean;
+}
+
+export interface BuyerPreferredPaymentMode {
+  paymentModeId?: number;
+  subPaymentModeId?: number;
 }
 
 export interface BiznessEventTypeOption {
@@ -110,6 +121,7 @@ export interface CustomerSearchResult {
   buyerId: number;
   buyerName?: string;
   name?: string;
+  code?: string;
   phone?: string;
   address?: string;
   employeeId?: number;
@@ -120,6 +132,7 @@ export interface Customer {
   buyerId: number;
   name: string;
   buyerName?: string;
+  code?: string;
   phone?: string;
   address?: string;
   employeeId?: number;
@@ -164,6 +177,8 @@ export interface ProductDetail {
   costMin?: number;
   costMax?: number;
   costAvg?: number;
+  /** True when CurrentStock has at least one row for this product (qty may be 0). */
+  hasCurrentStock?: boolean;
   productType?: string;
   hasPriceSetup: boolean;
 }
@@ -304,12 +319,15 @@ export interface SaveInvoiceCardPaymentRequest {
 }
 
 export interface SaveInvoiceRequest {
+  companyId: number;
   salesOrderId?: string;
   buyerId?: number;
   customerName?: string;
   mobile?: string;
   address?: string;
   remarks?: string;
+  /** SalesOrder_Delivery.DeliveryAddress — insert on create; update on edit */
+  deliveryAddress?: string;
   locationId: number;
   paymentModeId: number;
   subPaymentModeId?: number;
@@ -412,6 +430,8 @@ export interface InvoicePrintContext {
   collectedAmount: number;
   /** SalesOrder.TotalAmount (invoice sales amount). */
   salesAmount: number;
+  /** TempLedgerDue.PreviousDue via SP_PosSalesLedgerDue (Invoice Report / Invoice POS). */
+  previousDue?: number;
 }
 
 export interface LoadedInvoice {
@@ -420,9 +440,12 @@ export interface LoadedInvoice {
   salesOrderNo: string;
   buyerId: number;
   customerName: string;
+  customerCode?: string;
   mobile?: string;
   address?: string;
   remarks?: string;
+  /** From SalesOrder_Delivery.DeliveryAddress for this SalesOrderId */
+  deliveryAddress?: string;
   referenceId?: number;
   biznessEventTypeId: number;
   projectId?: number;
@@ -438,6 +461,8 @@ export interface LoadedInvoice {
   othersCharge: number;
   givenAmount: number;
   grandTotal: number;
+  /** SalesOrder.PreviousDues — ledger due at time of save (edit load only). */
+  previousDues?: number;
   mixedPayment?: SaveInvoiceMixedPaymentRequest;
   cardPayment?: SaveInvoiceCardPaymentRequest;
   lines: LoadedInvoiceLine[];

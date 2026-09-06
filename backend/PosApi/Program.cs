@@ -6,6 +6,7 @@ using PosApi.Configuration;
 using PosApi.Data;
 using PosApi.Endpoints;
 using PosApi.Hubs;
+using PosApi.Logging;
 using PosApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -35,8 +36,17 @@ builder.Services.AddScoped<ILookupService, LookupService>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
 builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IPosService, PosService>();
+builder.Services.AddScoped<IInvoiceNotificationService, InvoiceNotificationService>();
+builder.Services.AddHttpClient(nameof(InvoiceNotificationService))
+    .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddSingleton<IAppActivityLogger, AppActivityLogger>();
+builder.Services.AddSingleton<SqlUserFriendlyError>();
+builder.Services.AddScoped<ActivityLogActionFilter>();
 
-builder.Services.AddControllers();
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<ActivityLogActionFilter>();
+});
 builder.Services.AddSignalR(options =>
 {
     options.MaximumReceiveMessageSize = 512 * 1024;
@@ -87,6 +97,8 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+app.UseMiddleware<UnhandledExceptionMiddleware>();
+
 app.UseSwagger();
 app.UseSwaggerUI(options =>
 {
@@ -94,12 +106,24 @@ app.UseSwaggerUI(options =>
     options.RoutePrefix = "swagger";
 });
 
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.UseCors("Frontend");
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapGet("/", () => Results.Redirect("/swagger"));
 app.MapControllers();
 app.MapAuthEndpoints();
 app.MapHub<ScanRelayHub>("/hubs/scan-relay");
+
+var spaIndex = Path.Combine(app.Environment.WebRootPath ?? string.Empty, "index.html");
+if (File.Exists(spaIndex))
+{
+    app.MapFallbackToFile("index.html");
+}
+else
+{
+    app.MapGet("/", () => Results.Redirect("/swagger"));
+}
 
 app.Run();
