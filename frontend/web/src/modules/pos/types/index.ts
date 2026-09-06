@@ -88,6 +88,13 @@ export interface PosFeatureFlags {
   posMultiplePriceSales: boolean;
   /** Administration department + Administrator level only. */
   canViewProductCost: boolean;
+  /** When true, pay mode comes from Buyer_AgreementCredit.PreferredPaymentModeId for the selected customer. */
+  restrictedPaymentModeInPos: boolean;
+}
+
+export interface BuyerPreferredPaymentMode {
+  paymentModeId?: number;
+  subPaymentModeId?: number;
 }
 
 export interface BiznessEventTypeOption {
@@ -114,6 +121,7 @@ export interface CustomerSearchResult {
   buyerId: number;
   buyerName?: string;
   name?: string;
+  code?: string;
   phone?: string;
   address?: string;
   employeeId?: number;
@@ -124,6 +132,7 @@ export interface Customer {
   buyerId: number;
   name: string;
   buyerName?: string;
+  code?: string;
   phone?: string;
   address?: string;
   employeeId?: number;
@@ -310,6 +319,7 @@ export interface SaveInvoiceCardPaymentRequest {
 }
 
 export interface SaveInvoiceRequest {
+  companyId: number;
   salesOrderId?: string;
   buyerId?: number;
   customerName?: string;
@@ -430,6 +440,7 @@ export interface LoadedInvoice {
   salesOrderNo: string;
   buyerId: number;
   customerName: string;
+  customerCode?: string;
   mobile?: string;
   address?: string;
   remarks?: string;
@@ -450,6 +461,8 @@ export interface LoadedInvoice {
   othersCharge: number;
   givenAmount: number;
   grandTotal: number;
+  /** SalesOrder.PreviousDues — ledger due at time of save (edit load only). */
+  previousDues?: number;
   mixedPayment?: SaveInvoiceMixedPaymentRequest;
   cardPayment?: SaveInvoiceCardPaymentRequest;
   lines: LoadedInvoiceLine[];

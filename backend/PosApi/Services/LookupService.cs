@@ -177,6 +177,7 @@ public class LookupService(IDbConnectionFactory db) : ILookupService
             PosSalesEdit = posSalesEditFeature && hasPosEditMenu,
             PosMultiplePriceSales = await IsFeatureAllowedAsync(conn, companyId, "PosMultiplePriceSales"),
             CanViewProductCost = await CanViewProductCostAsync(conn, securityUserId),
+            RestrictedPaymentModeInPos = await IsFeatureAllowedAsync(conn, companyId, "RestrictedPaymentModeInPOS"),
         };
     }
 

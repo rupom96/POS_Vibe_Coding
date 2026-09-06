@@ -11,7 +11,7 @@ import { SalesPersonSearchInput } from '../components/SalesPersonSearchInput';
 import { CustomerStatsTip } from '../components/CustomerStatsTip';
 import { PriceHistoryTip } from '../components/PriceHistoryTip';
 import { useToast } from '../../../shared/components/Toast';
-import { posSession } from '../../../config/posSession';
+import { getLoginSession, posSession } from '../../../config/posSession';
 import { PosItemsTable, type PosItemsTableHandle } from '../components/grid/PosItemsTable';
 import { SerialModal } from '../components/modals/SerialModal';
 import { StatusBar } from '../components/layout/StatusBar';
@@ -42,6 +42,7 @@ import {
   useGetReferencesQuery,
   useGetSalesPersonsQuery,
   useLazyGetCustomerLedgerDueQuery,
+  useLazyGetCustomerPreferredPaymentModeQuery,
   useLazyGetPriceHistoryQuery,
   useLazyGetProductQuery,
   useLazyGetProductPriceQuery,
@@ -76,7 +77,7 @@ import {
 } from '../offline/posOfflineStorage';
 import { hasSnapshotContent, toSnapshot } from '../offline/posSnapshot';
 import type { HeldInvoiceRecord } from '../offline/posDb';
-import type { CardPayment, CustomerSearchResult, InvoiceLine, InvoiceSearchResult, MixedModePayment, MultiScanResult, MultiScanSearchItem, MultiScanSerialItem, PaymentMode, ProductDetail, ProductSearchResult, ReferenceOption, SalesPerson, SaveInvoiceResponse } from '../types';
+import type { BuyerPreferredPaymentMode, CardPayment, CustomerSearchResult, InvoiceLine, InvoiceSearchResult, MixedModePayment, MultiScanResult, MultiScanSearchItem, MultiScanSerialItem, PaymentMode, ProductDetail, ProductSearchResult, ReferenceOption, SalesPerson, SaveInvoiceResponse } from '../types';
 import { generateId } from '../../../shared/utils/generateId';
 import { connectPosRelay, setRemoteArmState } from '../utils/scanRelay';
 import { REMOTE_FEED_TIMEOUT_MS } from '../utils/remotePreview';
@@ -201,7 +202,10 @@ export function PosPage() {
   const { data: salesPersons = [] } = useGetSalesPersonsQuery({ companyId: posSession.companyId });
   const { data: references = [] } = useGetReferencesQuery({ companyId: posSession.companyId });
   const { data: banks = [] } = useGetBanksQuery({ companyId: posSession.companyId });
-  const { data: posFeatures } = useGetPosFeaturesQuery({ companyId: posSession.companyId, securityUserId: posSession.securityUserId });
+  const { data: posFeatures, isLoading: posFeaturesLoading } = useGetPosFeaturesQuery(
+    { companyId: posSession.companyId, securityUserId: posSession.securityUserId },
+    { skip: posSession.companyId <= 0 || posSession.securityUserId <= 0 },
+  );
   const { data: biznessEventTypes = [] } = useGetBiznessEventTypesQuery({
     companyId: posSession.companyId,
     locationId: form.locationId,
@@ -219,6 +223,20 @@ export function PosPage() {
   const salesWithoutPriceSetup = posFeatures?.salesWithoutPriceSetup === true;
   const posMultiplePriceSales = posFeatures?.posMultiplePriceSales === true;
   const canViewProductCost = posFeatures?.canViewProductCost === true;
+  const restrictedPaymentModeInPos = posFeatures?.restrictedPaymentModeInPos === true;
+  /** Avoid duplicate preferred-payment-mode calls per buyer (incl. when features load after pick). */
+  const preferredModeBuyerRef = useRef<number | null>(null);
+  /** Last preferred-payment-mode API result for the current buyer. */
+  const buyerPreferredPaymentRef = useRef<BuyerPreferredPaymentMode | null>(null);
+  const [preferredPaymentVersion, setPreferredPaymentVersion] = useState(0);
+  const bumpPreferredPayment = useCallback(() => {
+    setPreferredPaymentVersion((v) => v + 1);
+  }, []);
+  const clearBuyerPreferredPayment = useCallback(() => {
+    preferredModeBuyerRef.current = null;
+    buyerPreferredPaymentRef.current = null;
+    bumpPreferredPayment();
+  }, [bumpPreferredPayment]);
   /** Session-only: remembered Yes/No for same-product+price merge until full page refresh. */
   const samePriceMergeDecisionRef = useRef<'merge' | 'skip' | null>(null);
   /** Loaded invoices only. Resolved once; do not re-check PosSalesEdit in child components. */
@@ -240,6 +258,13 @@ export function PosPage() {
   }, [biznessEventTypes, dispatch, form.biznessEventTypeId]);
 
   useEffect(() => {
+    const session = getLoginSession();
+    if (session.locationId > 0 && form.locationId !== session.locationId) {
+      dispatch(updateField({ key: 'locationId', value: session.locationId }));
+    }
+  }, [dispatch, form.locationId]);
+
+  useEffect(() => {
     if (projects.length === 0) return;
     const current = projects.find((p) => p.projectId === form.projectId);
     if (current) return;
@@ -251,6 +276,7 @@ export function PosPage() {
   }, [projects, dispatch, form.projectId]);
 
   const [getLedgerDue] = useLazyGetCustomerLedgerDueQuery();
+  const [getPreferredPaymentMode] = useLazyGetCustomerPreferredPaymentModeQuery();
   const [getProduct] = useLazyGetProductQuery();
   const [searchProducts] = useLazySearchProductsQuery();
   const [getPriceHistory] = useLazyGetPriceHistoryQuery();
@@ -294,8 +320,9 @@ export function PosPage() {
   const [hoverHistory, setHoverHistory] = useState<{ label: string; value: number }[]>([]);
   const [tipPos, setTipPos] = useState({ x: 0, y: 0 });
   const [custTip, setCustTip] = useState({ visible: false, x: 0, y: 0 });
-  const hoverCache = useRef(new Map<number, { product: ProductDetail; history: { label: string; value: number }[] }>());
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const hoverRectRef = useRef<DOMRect | null>(null);
+  const hoverFetchGenRef = useRef(0);
   const scanRelayRef = useRef<HubConnection | null>(null);
   const remoteScanHandlerRef = useRef<((text: string) => void) | null>(null);
   const scanModalOpenRef = useRef(false);
@@ -354,7 +381,8 @@ export function PosPage() {
     setMixedModalOpen(false);
     setCardModalOpen(false);
     prevPayModeIdRef.current = 0;
-  }, []);
+    clearBuyerPreferredPayment();
+  }, [clearBuyerPreferredPayment]);
 
   const handleHoldInvoice = useCallback(async (closeModalAfter = false) => {
     if (isInvoiceReadOnlyRef.current) {
@@ -425,6 +453,7 @@ export function PosPage() {
   }, [dispatch, form.subPaymentModeId, paymentModes]);
 
   useEffect(() => {
+    if (restrictedPaymentModeInPos) return;
     if (parentPaymentModes.length === 0) return;
     const current = parentPaymentModes.find((m) => m.paymentModeId === form.paymentModeId);
     if (current) return;
@@ -433,7 +462,7 @@ export function PosPage() {
       key: 'paymentModeId',
       value: cashMode?.paymentModeId ?? parentPaymentModes[0].paymentModeId,
     }));
-  }, [dispatch, parentPaymentModes, form.paymentModeId]);
+  }, [dispatch, form.paymentModeId, parentPaymentModes, restrictedPaymentModeInPos]);
 
   const onSubPaymentModeChange = useCallback((subPaymentModeId: number) => {
     if (!subPaymentModeId) {
@@ -524,6 +553,106 @@ export function PosPage() {
     onSubPaymentModeChange(0);
   }, [onSubPaymentModeChange]);
 
+  const clearPaymentModeSelection = useCallback(() => {
+    dispatch(updateField({ key: 'paymentModeId', value: 0 }));
+    dispatch(updateField({ key: 'subPaymentModeId', value: undefined }));
+    dispatch(updateField({ key: 'mixedPayment', value: undefined }));
+    dispatch(updateField({ key: 'cardPayment', value: undefined }));
+    dispatch(updateField({ key: 'givenAmount', value: 0 }));
+  }, [dispatch]);
+
+  const applyBuyerPreferredPaymentMode = useCallback(async (buyerId: number) => {
+    try {
+      const preferred = await getPreferredPaymentMode(buyerId).unwrap();
+      buyerPreferredPaymentRef.current = preferred;
+      bumpPreferredPayment();
+
+      const locked =
+        (preferred.paymentModeId != null && preferred.paymentModeId > 0)
+        || (preferred.subPaymentModeId != null && preferred.subPaymentModeId > 0);
+
+      if (!locked) {
+        clearPaymentModeSelection();
+        return;
+      }
+
+      if (preferred.subPaymentModeId && preferred.subPaymentModeId > 0) {
+        const sub = paymentModes.find((m) => m.paymentModeId === preferred.subPaymentModeId);
+        if (sub?.parentId) {
+          onSubPaymentModeChange(sub.paymentModeId);
+          const parent = paymentModes.find((m) => m.paymentModeId === sub.parentId);
+          if (parent && isCardPaymentMode(parent)) {
+            setCardModalOpen(true);
+          }
+          return;
+        }
+      }
+
+      if (preferred.paymentModeId && preferred.paymentModeId > 0) {
+        const parentMode = parentPaymentModes.find((m) => m.paymentModeId === preferred.paymentModeId);
+        if (parentMode) {
+          onPayModeSelect(parentMode);
+          return;
+        }
+
+        onPaymentModeChange(preferred.paymentModeId);
+      }
+    } catch {
+      buyerPreferredPaymentRef.current = null;
+      bumpPreferredPayment();
+      clearPaymentModeSelection();
+    }
+  }, [
+    bumpPreferredPayment,
+    clearPaymentModeSelection,
+    getPreferredPaymentMode,
+    onPayModeSelect,
+    onPaymentModeChange,
+    onSubPaymentModeChange,
+    parentPaymentModes,
+    paymentModes,
+  ]);
+
+  const paymentModeDropdownLocked = useMemo(() => {
+    if (!form.buyerId || form.buyerId <= 0) return false;
+    if (preferredModeBuyerRef.current !== form.buyerId) return false;
+    const preferred = buyerPreferredPaymentRef.current;
+    if (!preferred) return false;
+    return (
+      (preferred.paymentModeId != null && preferred.paymentModeId > 0)
+      || (preferred.subPaymentModeId != null && preferred.subPaymentModeId > 0)
+    );
+  }, [form.buyerId, preferredPaymentVersion]);
+
+  useEffect(() => {
+    if (!restrictedPaymentModeInPos || form.salesOrderId) {
+      clearBuyerPreferredPayment();
+      return;
+    }
+    if (!form.buyerId || form.buyerId <= 0) {
+      clearBuyerPreferredPayment();
+      return;
+    }
+    if (paymentModesLoading || parentPaymentModes.length === 0) return;
+    if (preferredModeBuyerRef.current === form.buyerId && buyerPreferredPaymentRef.current) return;
+
+    if (preferredModeBuyerRef.current !== form.buyerId) {
+      buyerPreferredPaymentRef.current = null;
+      bumpPreferredPayment();
+    }
+    preferredModeBuyerRef.current = form.buyerId;
+    void applyBuyerPreferredPaymentMode(form.buyerId);
+  }, [
+    applyBuyerPreferredPaymentMode,
+    bumpPreferredPayment,
+    clearBuyerPreferredPayment,
+    form.buyerId,
+    form.salesOrderId,
+    parentPaymentModes.length,
+    paymentModesLoading,
+    restrictedPaymentModeInPos,
+  ]);
+
   const payModeHasPopup = isMixedPaymentMode(selectedPayMode) || isCardPaymentMode(selectedPayMode);
   const reopenPayModePopup = useCallback(() => {
     if (isInvoiceReadOnlyRef.current) return;
@@ -613,6 +742,7 @@ export function PosPage() {
 
   const selectCustomer = useCallback(async (customer: CustomerSearchResult) => {
     if (isInvoiceReadOnlyRef.current) return;
+    setHoverHistory([]);
     dispatch(setCustomer(customer));
     // LoginUserWiseSalesPersonSet = true → keep current/login sales person (do not overwrite from buyer).
     // LoginUserWiseSalesPersonSet = false/missing → set sales person from the selected buyer.
@@ -632,7 +762,11 @@ export function PosPage() {
     } catch {
       /* ledger optional */
     }
-  }, [dispatch, getLedgerDue, loginUserWiseSalesPersonSet]);
+  }, [
+    dispatch,
+    getLedgerDue,
+    loginUserWiseSalesPersonSet,
+  ]);
 
   const onProductSelect = useCallback(async (lineId: string, product: ProductSearchResult) => {
     if (isInvoiceReadOnlyRef.current) return;
@@ -930,44 +1064,61 @@ export function PosPage() {
     return { x, y };
   }, [canViewProductCost]);
 
-  const handleRowHover = useCallback(async (lineId: string | null, rect?: DOMRect) => {
-    if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    setHoverLineId(lineId);
-    if (!lineId || !rect) {
-      setHoverProduct(undefined);
-      return;
-    }
-    hoverTimer.current = setTimeout(async () => {
-      const line = form.lines.find((l) => l.id === lineId);
-      if (!line?.productId) return;
-      const cached = hoverCache.current.get(line.productId);
-      if (cached) {
-        setHoverProduct(cached.product);
-        setHoverHistory(cached.history);
-        setTipPos(computeTipPos(rect));
-        return;
-      }
-      try {
-        const product = await getProduct({
-          productId: line.productId,
-          locationId: form.locationId,
-          companyId: posSession.companyId,
-        }).unwrap();
-        let history: { label: string; value: number }[] = [];
+  const loadHoverTip = useCallback(async (lineId: string, rect: DOMRect, buyerId?: number) => {
+    const line = form.lines.find((l) => l.id === lineId);
+    if (!line?.productId) return;
+    const fetchGen = ++hoverFetchGenRef.current;
+    try {
+      const product = await getProduct({
+        productId: line.productId,
+        locationId: form.locationId,
+        companyId: posSession.companyId,
+      }).unwrap();
+      if (fetchGen !== hoverFetchGenRef.current) return;
+      let history: { label: string; value: number }[] = [];
+      if (buyerId && buyerId > 0) {
         try {
-          history = await getPriceHistory({ productId: line.productId, buyerId: form.buyerId }).unwrap();
+          history = await getPriceHistory({ productId: line.productId, buyerId }).unwrap();
         } catch {
           /* price history is optional — still show product/cost info */
         }
-        hoverCache.current.set(line.productId!, { product, history });
-        setHoverProduct(product);
-        setHoverHistory(history);
-        setTipPos(computeTipPos(rect));
-      } catch {
-        setHoverProduct(undefined);
       }
+      if (fetchGen !== hoverFetchGenRef.current) return;
+      setHoverProduct(product);
+      setHoverHistory(history);
+      setTipPos(computeTipPos(rect));
+    } catch {
+      if (fetchGen !== hoverFetchGenRef.current) return;
+      setHoverProduct(undefined);
+      setHoverHistory([]);
+    }
+  }, [computeTipPos, form.lines, form.locationId, getPriceHistory, getProduct]);
+
+  const handleRowHover = useCallback((lineId: string | null, rect?: DOMRect) => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    setHoverLineId(lineId);
+    if (!lineId || !rect) {
+      hoverRectRef.current = null;
+      hoverFetchGenRef.current += 1;
+      setHoverProduct(undefined);
+      setHoverHistory([]);
+      return;
+    }
+    hoverRectRef.current = rect;
+    hoverTimer.current = setTimeout(() => {
+      void loadHoverTip(lineId, rect, form.buyerId);
     }, 200);
-  }, [form.lines, form.buyerId, form.locationId, getProduct, getPriceHistory, computeTipPos]);
+  }, [form.buyerId, loadHoverTip]);
+
+  const prevHoverBuyerIdRef = useRef(form.buyerId);
+  useEffect(() => {
+    if (prevHoverBuyerIdRef.current === form.buyerId) return;
+    prevHoverBuyerIdRef.current = form.buyerId;
+    setHoverHistory([]);
+    if (hoverLineId && hoverRectRef.current) {
+      void loadHoverTip(hoverLineId, hoverRectRef.current, form.buyerId);
+    }
+  }, [form.buyerId, hoverLineId, loadHoverTip]);
 
   const handleSave = useCallback(async () => {
     if (isInvoiceReadOnlyRef.current) {
@@ -980,7 +1131,13 @@ export function PosPage() {
       ? paymentModes.find((p) => p.paymentModeId === form.paymentModeId)
       : undefined;
 
+    const session = getLoginSession();
+    const saveCompanyId = session.companyId;
+    const saveLocationId = form.locationId > 0 ? form.locationId : session.locationId;
+
     const validationErrors = validateInvoiceForSave({
+      companyId: saveCompanyId,
+      locationId: saveLocationId,
       buyerId: form.buyerId,
       customerName: form.customerName,
       employeeId: form.employeeId,
@@ -1085,6 +1242,7 @@ export function PosPage() {
 
     try {
       const response = await saveInvoice({
+        companyId: saveCompanyId,
         salesOrderId: form.salesOrderId,
         buyerId: form.buyerId,
         customerName: form.customerName,
@@ -1092,7 +1250,7 @@ export function PosPage() {
         address: form.address,
         remarks: form.remarks,
         deliveryAddress: form.deliveryAddress,
-        locationId: form.locationId,
+        locationId: saveLocationId,
         paymentModeId: form.paymentModeId,
         subPaymentModeId: form.subPaymentModeId,
         referenceId: form.referenceId,
@@ -1184,17 +1342,6 @@ export function PosPage() {
           locationId: form.locationId,
         }).unwrap();
         dispatch(loadInvoice(loaded));
-        if (loaded.buyerId) {
-          try {
-            const due = await getLedgerDue({
-              buyerId: loaded.buyerId,
-              userId: posSession.securityUserId,
-            }).unwrap();
-            dispatch(updateField({ key: 'ledgerDue', value: due }));
-          } catch {
-            /* ledger optional */
-          }
-        }
       } catch {
         // Fallback: still leave identity from the save response on the form.
         dispatch(updateField({ key: 'invoiceNo', value: response.invoiceNo }));
@@ -1225,7 +1372,6 @@ export function PosPage() {
     saveLocked,
     saving,
     getInvoice,
-    getLedgerDue,
   ]);
 
   useEffect(() => {
@@ -1364,15 +1510,19 @@ export function PosPage() {
   }, [dispatch]);
   const onClearAll = useCallback(() => {
     dispatch(resetPosForm());
-    // Clear All keeps the default payment mode (Cash) rather than emptying it.
-    const cashMode = parentPaymentModes.find((m) => m.name.trim().toLowerCase() === 'cash');
-    if (cashMode) {
-      dispatch(updateField({ key: 'paymentModeId', value: cashMode.paymentModeId }));
+    if (restrictedPaymentModeInPos) {
+      clearPaymentModeSelection();
+    } else {
+      // Clear All keeps the default payment mode (Cash) rather than emptying it.
+      const cashMode = parentPaymentModes.find((m) => m.name.trim().toLowerCase() === 'cash');
+      if (cashMode) {
+        dispatch(updateField({ key: 'paymentModeId', value: cashMode.paymentModeId }));
+      }
     }
     resetPosUiState();
     setSaveLocked(false);
     void clearPosDraft();
-  }, [dispatch, parentPaymentModes, resetPosUiState]);
+  }, [clearPaymentModeSelection, dispatch, parentPaymentModes, resetPosUiState, restrictedPaymentModeInPos]);
   onClearAllRef.current = onClearAll;
   const onCustomerNameCommit = useCallback((name: string) => {
     if (isInvoiceReadOnlyRef.current) return;
@@ -1380,21 +1530,43 @@ export function PosPage() {
     // Free-typed values never create / keep a buyer master record (TC-07).
     dispatch(updateField({ key: 'buyerId', value: undefined }));
     dispatch(updateField({ key: 'ledgerDue', value: 0 }));
+    if (restrictedPaymentModeInPos) {
+      clearPaymentModeSelection();
+    }
     if (!name.trim()) {
+      dispatch(updateField({ key: 'customerCode', value: '' }));
       dispatch(updateField({ key: 'mobile', value: '' }));
       dispatch(updateField({ key: 'address', value: '' }));
     }
-  }, [dispatch]);
+  }, [clearPaymentModeSelection, dispatch, restrictedPaymentModeInPos]);
   const onMobileCommit = useCallback((mobile: string) => {
     if (isInvoiceReadOnlyRef.current) return;
     dispatch(updateField({ key: 'mobile', value: mobile }));
     dispatch(updateField({ key: 'buyerId', value: undefined }));
     dispatch(updateField({ key: 'ledgerDue', value: 0 }));
+    if (restrictedPaymentModeInPos) {
+      clearPaymentModeSelection();
+    }
     if (!mobile.trim()) {
       dispatch(updateField({ key: 'customerName', value: '' }));
+      dispatch(updateField({ key: 'customerCode', value: '' }));
       dispatch(updateField({ key: 'address', value: '' }));
     }
-  }, [dispatch]);
+  }, [clearPaymentModeSelection, dispatch, restrictedPaymentModeInPos]);
+  const onCustomerCodeCommit = useCallback((code: string) => {
+    if (isInvoiceReadOnlyRef.current) return;
+    dispatch(updateField({ key: 'customerCode', value: code }));
+    dispatch(updateField({ key: 'buyerId', value: undefined }));
+    dispatch(updateField({ key: 'ledgerDue', value: 0 }));
+    if (restrictedPaymentModeInPos) {
+      clearPaymentModeSelection();
+    }
+    if (!code.trim()) {
+      dispatch(updateField({ key: 'customerName', value: '' }));
+      dispatch(updateField({ key: 'mobile', value: '' }));
+      dispatch(updateField({ key: 'address', value: '' }));
+    }
+  }, [clearPaymentModeSelection, dispatch, restrictedPaymentModeInPos]);
   const selectedSalesPerson = useMemo(() => salesPersons.find((sp) => sp.employeeId === form.employeeId) ?? null, [salesPersons, form.employeeId]);
   const selectedReference = useMemo(
     () => references.find((ref) => ref.allCompanyId === form.referenceId) ?? null,
@@ -1434,19 +1606,8 @@ export function PosPage() {
       locationId: form.locationId,
     }).unwrap();
     dispatch(loadInvoice(loaded));
-    if (loaded.buyerId) {
-      try {
-        const due = await getLedgerDue({
-          buyerId: loaded.buyerId,
-          userId: posSession.securityUserId,
-        }).unwrap();
-        dispatch(updateField({ key: 'ledgerDue', value: due }));
-      } catch {
-        /* ledger optional */
-      }
-    }
     showToast(`Loaded ${loaded.invoiceNo}`, '📄');
-  }, [dispatch, form.locationId, getInvoice, getLedgerDue, showToast]);
+  }, [dispatch, form.locationId, getInvoice, showToast]);
 
   const applySerialScan = useCallback(async (serial: MultiScanSerialItem) => {
     if (isInvoiceReadOnlyRef.current) return;
@@ -1757,18 +1918,33 @@ export function PosPage() {
                     onHoverLeave={() => setCustTip((t) => (t.visible ? { ...t, visible: false } : t))}
                   />
                 </div>
-                <div className="fr">
-                  <span className="fl">Mobile No</span>
-                  <CustomerSearchInput
-                    value={form.mobile}
-                    companyId={posSession.companyId}
-                    variant="phone"
-                    refreshKey={customerListRefresh}
-                    selectedBuyerId={form.buyerId}
-                    disabled={isInvoiceReadOnly}
-                    onCommit={onMobileCommit}
-                    onSelect={selectCustomer}
-                  />
+                <div className="fr fr-duo">
+                  <div className="fr-duo-cell">
+                    <span className="fl">Mobile No</span>
+                    <CustomerSearchInput
+                      value={form.mobile}
+                      companyId={posSession.companyId}
+                      variant="phone"
+                      refreshKey={customerListRefresh}
+                      selectedBuyerId={form.buyerId}
+                      disabled={isInvoiceReadOnly}
+                      onCommit={onMobileCommit}
+                      onSelect={selectCustomer}
+                    />
+                  </div>
+                  <div className="fr-duo-cell">
+                    <span className="fl">Code</span>
+                    <CustomerSearchInput
+                      value={form.customerCode}
+                      companyId={posSession.companyId}
+                      variant="code"
+                      refreshKey={customerListRefresh}
+                      selectedBuyerId={form.buyerId}
+                      disabled={isInvoiceReadOnly}
+                      onCommit={onCustomerCodeCommit}
+                      onSelect={selectCustomer}
+                    />
+                  </div>
                 </div>
                 <div className="fr">
                   <span className="fl">Address</span>
@@ -1824,12 +2000,12 @@ export function PosPage() {
                     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
                     <select
-                      className="fv"
+                      className={`fv${paymentModeDropdownLocked ? ' fv--locked' : ''}`}
                       style={{ flex: 1, minWidth: 0 }}
                       value={form.paymentModeId > 0 ? form.paymentModeId : ''}
-                      disabled={isInvoiceReadOnly || paymentModesLoading || paymentModesError}
+                      disabled={isInvoiceReadOnly || paymentModesLoading || paymentModesError || paymentModeDropdownLocked}
                       onChange={(e) => {
-                        if (isInvoiceReadOnly) return;
+                        if (isInvoiceReadOnly || paymentModeDropdownLocked) return;
                         const id = Number(e.target.value) || 0;
                         if (!id) {
                           onPayModeClear();
@@ -1853,7 +2029,7 @@ export function PosPage() {
                         type="button"
                         className="pay-mode-edit-btn"
                         title="Open payment details"
-                        disabled={isInvoiceReadOnly}
+                        disabled={isInvoiceReadOnly || paymentModeDropdownLocked}
                         onClick={reopenPayModePopup}
                       >
                         ✎
@@ -1876,11 +2052,11 @@ export function PosPage() {
                   <div className="fr-duo-cell">
                     <span className="fl">Sub Pay Mode</span>
                     <select
-                      className="fv"
+                      className={`fv${paymentModeDropdownLocked ? ' fv--locked' : ''}`}
                       value={form.subPaymentModeId && form.subPaymentModeId > 0 ? form.subPaymentModeId : ''}
-                      disabled={isInvoiceReadOnly || subPaymentModes.length === 0 || paymentModesLoading || paymentModesError}
+                      disabled={isInvoiceReadOnly || subPaymentModes.length === 0 || paymentModesLoading || paymentModesError || paymentModeDropdownLocked}
                       onChange={(e) => {
-                        if (isInvoiceReadOnly) return;
+                        if (isInvoiceReadOnly || paymentModeDropdownLocked) return;
                         const id = Number(e.target.value) || 0;
                         if (!id) {
                           onSubPayModeClear();
@@ -2125,7 +2301,7 @@ export function PosPage() {
       <StatusBar connected={health?.status === 'Connected'} invoiceNo={form.invoiceNo} customerName={form.customerName} />
 
       <CustomerStatsTip visible={custTip.visible} stats={customerStats} x={custTip.x} y={custTip.y} />
-      <PriceHistoryTip visible={!!hoverLineId} product={hoverProduct} history={hoverHistory} x={tipPos.x} y={tipPos.y} showCost={canViewProductCost} />
+      <PriceHistoryTip visible={!!hoverLineId} product={hoverProduct} history={hoverHistory} x={tipPos.x} y={tipPos.y} showCost={canViewProductCost} buyerId={form.buyerId} />
 
       <CustomerSetupModal
         open={customerModalOpen}
@@ -2143,6 +2319,7 @@ export function PosPage() {
             buyerId: customer.buyerId,
             buyerName: customer.name,
             name: customer.name,
+            code: customer.code ?? '',
             phone: customer.phone ?? '',
             address: customer.address,
             employeeId: customer.employeeId,
@@ -2283,6 +2460,15 @@ export function PosPage() {
           }
         }}
       />
+
+      {posFeaturesLoading && (
+        <div className="pos-block-loader" role="status" aria-live="polite" aria-label="Loading POS settings">
+          <div className="pos-block-loader__card">
+            <div className="pos-block-loader__spinner" aria-hidden="true" />
+            <p className="pos-block-loader__text">Loading POS settings…</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

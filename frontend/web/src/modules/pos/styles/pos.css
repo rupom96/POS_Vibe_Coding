@@ -309,7 +309,7 @@ input.fv[type="datetime-local"]{min-width:0;max-width:100%;font-size:10px;paddin
 select.ug-inp{cursor:pointer;}
 .ug-mono{font-family:var(--mono);font-size:11px;}
 /* Product cell */
-.ug-td-prod{min-width:170px;background:var(--surface);}
+.ug-td-prod{min-width:240px;background:var(--surface);}
 .ug-prod-wrap{display:flex;flex-direction:column;position:relative;z-index:0;min-width:0;}
 .ug-prod-row{display:flex;align-items:center;gap:4px;min-width:0;width:100%;}
 .prod-ac-wrap{flex:1;min-width:0;position:relative;z-index:0;}
@@ -319,15 +319,15 @@ select.ug-inp{cursor:pointer;}
 .serial-badge{display:inline-flex;align-items:center;gap:3px;flex-shrink:0;background:rgba(167,139,250,.15);border:1px solid rgba(167,139,250,.3);color:var(--purple);font-size:9px;font-weight:700;border-radius:4px;padding:1px 5px;cursor:pointer;font-family:var(--ui);}
 .serial-badge:hover{background:rgba(167,139,250,.28);}
 /* Stock cell */
-.ug-td-stock{min-width:82px;}
-.ug-stock{padding:3px 7px;font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:600;display:block;white-space:nowrap;}
+.ug-td-stock{min-width:56px;}
+.ug-stock{padding:3px 5px;font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:600;display:block;white-space:nowrap;}
 .ug-stock-empty{color:var(--text3);}
 /* Last price cell */
-.ug-td-lp{min-width:90px;}
-.ug-lp{padding:0 7px;font-family:var(--mono);font-size:11.5px;color:var(--orange);font-weight:600;white-space:nowrap;display:flex;align-items:center;height:100%;}
+.ug-td-lp{min-width:72px;}
+.ug-lp{padding:0 5px;font-family:var(--mono);font-size:11.5px;color:var(--orange);font-weight:600;white-space:nowrap;display:flex;align-items:center;height:100%;}
 /* Total cell */
-.ug-td-total{min-width:105px;}
-.ug-total{padding:0 8px;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);display:flex;align-items:center;height:100%;}
+.ug-td-total{min-width:72px;}
+.ug-total{padding:0 5px;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);display:flex;align-items:center;height:100%;}
 .ug-total.empty{color:var(--text3);}
 /* Delete cell */
 .ug-td-del{width:34px;text-align:center;padding:0 3px;}
@@ -585,7 +585,13 @@ select.ug-inp{cursor:pointer;}
 .mm-label{width:138px;flex-shrink:0;font-size:11px;color:var(--text2);}
 .mm-req{color:var(--orange);}
 .mm-suffix{font-size:11px;color:var(--text3);flex-shrink:0;}
-.mm-readonly{background:var(--surface2);cursor:default;color:var(--text);}
+.fv--locked,
+select.fv:disabled{
+  background:var(--surface2);
+  color:var(--text);
+  cursor:not-allowed;
+  opacity:1;
+}
 .mm-row--check{margin-bottom:2px;}
 .mm-row--check input{width:13px;height:13px;accent-color:var(--accent);cursor:pointer;}
 .mm-row--check label{font-size:12px;cursor:pointer;color:var(--text);}
@@ -1244,4 +1250,46 @@ select.ug-inp{cursor:pointer;}
 .swal2-popup.pos-swal-popup .swal2-cancel.pos-swal-cancel{background:var(--surface2);color:var(--text2);border:1px solid var(--border);}
 .swal2-popup.pos-swal-popup .pos-swal-remember{display:inline-flex;align-items:center;gap:8px;margin-top:4px;cursor:pointer;user-select:none;color:var(--text2);font-size:13px;}
 .swal2-popup.pos-swal-popup .pos-swal-remember input{accent-color:var(--accent);}
+
+/* Full-screen blocker while BRFeature / pos-features loads */
+.pos-block-loader{
+  position:fixed;
+  inset:0;
+  z-index:10050;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(13,17,23,0.72);
+  backdrop-filter:blur(2px);
+  pointer-events:all;
+}
+[data-theme="light"] .pos-block-loader{background:rgba(228,232,238,0.78);}
+.pos-block-loader__card{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:12px;
+  padding:20px 28px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:10px;
+  box-shadow:0 12px 40px rgba(0,0,0,0.35);
+}
+.pos-block-loader__spinner{
+  width:36px;
+  height:36px;
+  border:3px solid var(--border2);
+  border-top-color:var(--accent);
+  border-radius:50%;
+  animation:pos-block-loader-spin .75s linear infinite;
+}
+.pos-block-loader__text{
+  margin:0;
+  font-family:var(--ui);
+  font-size:12.5px;
+  font-weight:600;
+  color:var(--text2);
+  letter-spacing:.2px;
+}
+@keyframes pos-block-loader-spin{to{transform:rotate(360deg);}}
 

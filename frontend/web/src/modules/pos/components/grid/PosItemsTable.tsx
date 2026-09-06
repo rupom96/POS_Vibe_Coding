@@ -372,17 +372,17 @@ export const PosItemsTable = memo(forwardRef<PosItemsTableHandle, {
           <thead>
             <tr>
               <th className="ug-th" style={{ width: 30 }}>#</th>
-              <th className="ug-th" style={{ minWidth: 168 }}>Product / Barcode</th>
-              <th className="ug-th" style={{ minWidth: 72 }}>Model</th>
-              <th className="ug-th" style={{ minWidth: 68 }}>Stock</th>
-              <th className="ug-th" style={{ minWidth: 56 }}>Unit</th>
-              <th className="ug-th" style={{ minWidth: 48 }}>Qty</th>
-              <th className="ug-th" style={{ minWidth: 80 }}>Unit Price (Tk)</th>
-              <th className="ug-th" style={{ minWidth: 70 }}>Disc/Unit (Tk)</th>
-              <th className="ug-th" style={{ minWidth: 64 }}>Wty (Days)</th>
-              <th className="ug-th" style={{ minWidth: 46 }}>VAT %</th>
-              <th className="ug-th" style={{ minWidth: 46 }}>Tax %</th>
-              <th className="ug-th" style={{ minWidth: 88 }}>Total (Tk)</th>
+              <th className="ug-th" style={{ minWidth: 240 }}>Product / Barcode</th>
+              <th className="ug-th" style={{ minWidth: 64 }}>Model</th>
+              <th className="ug-th" style={{ minWidth: 56 }}>Stock</th>
+              <th className="ug-th" style={{ minWidth: 48 }}>Unit</th>
+              <th className="ug-th" style={{ minWidth: 42 }}>Qty</th>
+              <th className="ug-th" style={{ minWidth: 68 }}>Unit Price (Tk)</th>
+              <th className="ug-th" style={{ minWidth: 58 }}>Disc/Unit (Tk)</th>
+              <th className="ug-th" style={{ minWidth: 52 }}>Wty (Days)</th>
+              <th className="ug-th" style={{ minWidth: 40 }}>VAT %</th>
+              <th className="ug-th" style={{ minWidth: 40 }}>Tax %</th>
+              <th className="ug-th" style={{ minWidth: 72 }}>Total (Tk)</th>
               <th className="ug-th" style={{ width: 34 }} />
             </tr>
           </thead>

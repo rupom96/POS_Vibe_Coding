@@ -4,6 +4,7 @@ public class CustomerDto
 {
     public long BuyerId { get; set; }
     public string Name { get; set; } = string.Empty;
+    public string? Code { get; set; }
     public string? Phone { get; set; }
     public string? Address { get; set; }
     public string? Initial { get; set; }
@@ -17,6 +18,7 @@ public class CustomerSearchResultDto
 {
     public long BuyerId { get; set; }
     public string BuyerName { get; set; } = string.Empty;
+    public string? Code { get; set; }
     public string? Phone { get; set; }
     public string? Address { get; set; }
     public long? EmployeeId { get; set; }
@@ -34,6 +36,12 @@ public record CreateCustomerRequest(
     long? CompanyId,
     long? LocationId,
     long? EntryBy);
+
+public class BuyerPreferredPaymentModeDto
+{
+    public long? PaymentModeId { get; set; }
+    public long? SubPaymentModeId { get; set; }
+}
 
 public class CustomerStatsDto
 {

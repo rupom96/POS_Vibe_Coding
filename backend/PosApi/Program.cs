@@ -36,6 +36,9 @@ builder.Services.AddScoped<ILookupService, LookupService>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
 builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IPosService, PosService>();
+builder.Services.AddScoped<IInvoiceNotificationService, InvoiceNotificationService>();
+builder.Services.AddHttpClient(nameof(InvoiceNotificationService))
+    .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddSingleton<IAppActivityLogger, AppActivityLogger>();
 builder.Services.AddSingleton<SqlUserFriendlyError>();
 builder.Services.AddScoped<ActivityLogActionFilter>();

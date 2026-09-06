@@ -209,23 +209,57 @@ public class ProductService(IDbConnectionFactory db) : IProductService
 
     public async Task<IReadOnlyList<PriceHistoryItemDto>> GetPriceHistoryAsync(long productId, long? buyerId)
     {
+        if (buyerId is > 0)
+        {
+            const string buyerSql = """
+                SELECT TOP 3
+                    CASE ranked.RowNum
+                        WHEN 1 THEN 'Last'
+                        WHEN 2 THEN '2nd last'
+                        ELSE '3rd last'
+                    END AS Label,
+                    ranked.Price AS Value
+                FROM (
+                    SELECT
+                        sod.Price,
+                        ROW_NUMBER() OVER (ORDER BY sod.DateOfEntry DESC, sod.SalesOrderDetailId DESC) AS RowNum
+                    FROM SalesOrderDetail sod
+                    INNER JOIN SalesOrder so ON so.SalesOrderId = sod.SalesOrderId
+                    WHERE sod.ProductId = @ProductId
+                      AND so.BuyerId = @BuyerId
+                ) ranked
+                WHERE ranked.RowNum <= 3
+                ORDER BY ranked.RowNum
+                """;
+
+            using var buyerConn = db.CreateConnection();
+            return (await buyerConn.QueryAsync<PriceHistoryItemDto>(
+                buyerSql,
+                new { ProductId = productId, BuyerId = buyerId.Value })).ToList();
+        }
+
         const string sql = """
             SELECT TOP 3
-                CASE
-                    WHEN ROW_NUMBER() OVER (ORDER BY sod.DateOfEntry DESC) = 1 THEN 'Last'
-                    WHEN ROW_NUMBER() OVER (ORDER BY sod.DateOfEntry DESC) = 2 THEN '2nd last'
+                CASE ranked.RowNum
+                    WHEN 1 THEN 'Last'
+                    WHEN 2 THEN '2nd last'
                     ELSE '3rd last'
                 END AS Label,
-                sod.Price AS Value
-            FROM SalesOrderDetail sod
-            INNER JOIN SalesOrder so ON so.SalesOrderId = sod.SalesOrderId
-            WHERE sod.ProductId = @ProductId
-              AND (@BuyerId IS NULL OR so.BuyerId = @BuyerId)
-            ORDER BY sod.DateOfEntry DESC
+                ranked.Price AS Value
+            FROM (
+                SELECT
+                    sod.Price,
+                    ROW_NUMBER() OVER (ORDER BY sod.DateOfEntry DESC, sod.SalesOrderDetailId DESC) AS RowNum
+                FROM SalesOrderDetail sod
+                INNER JOIN SalesOrder so ON so.SalesOrderId = sod.SalesOrderId
+                WHERE sod.ProductId = @ProductId
+            ) ranked
+            WHERE ranked.RowNum <= 3
+            ORDER BY ranked.RowNum
             """;
 
         using var conn = db.CreateConnection();
-        var history = (await conn.QueryAsync<PriceHistoryItemDto>(sql, new { ProductId = productId, BuyerId = buyerId })).ToList();
+        var history = (await conn.QueryAsync<PriceHistoryItemDto>(sql, new { ProductId = productId })).ToList();
 
         if (history.Count > 0)
             return history;

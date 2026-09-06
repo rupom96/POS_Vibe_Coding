@@ -10,6 +10,7 @@ export function PriceHistoryTip({
   x,
   y,
   showCost = false,
+  buyerId,
 }: {
   visible: boolean;
   product?: ProductDetail;
@@ -17,6 +18,8 @@ export function PriceHistoryTip({
   x: number;
   y: number;
   showCost?: boolean;
+  /** When set, empty history means no prior sales for this customer (no list-price fallback). */
+  buyerId?: number;
 }) {
   if (!visible || !product) return null;
 
@@ -40,11 +43,10 @@ export function PriceHistoryTip({
                 </div>
               </div>
             ))
+          ) : buyerId && buyerId > 0 ? (
+            <div className="pt-cost-empty">No prior sales for this customer</div>
           ) : (
-            <div className="pt-price">
-              <div className="pt-price-rank">List</div>
-              <div className="pt-price-val latest">{formatNumber(product.lastPrice)}</div>
-            </div>
+            <div className="pt-cost-empty">Select customer to see sale history</div>
           )}
         </div>
       </div>

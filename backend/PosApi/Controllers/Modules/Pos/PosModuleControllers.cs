@@ -102,6 +102,10 @@ public class CustomersController(ICustomerService customerService) : ControllerB
     public async Task<ActionResult<decimal>> GetLedgerDue(long buyerId, [FromQuery] long? userId = null)
         => Ok(await customerService.GetLedgerDueAsync(buyerId, userId));
 
+    [HttpGet("{buyerId:long}/preferred-payment-mode")]
+    public async Task<ActionResult<BuyerPreferredPaymentModeDto>> GetPreferredPaymentMode(long buyerId)
+        => Ok(await customerService.GetPreferredPaymentModeAsync(buyerId));
+
     [HttpPost]
     public async Task<ActionResult<CustomerDto>> Create([FromBody] CreateCustomerRequest request)
     {
@@ -311,7 +315,8 @@ public class PosController(IPosService posService, SqlUserFriendlyError friendly
     {
         try
         {
-            var response = await posService.SaveInvoiceAsync(request);
+            var scopedRequest = SaveInvoiceRequestScope.ApplyClientSession(Request, request);
+            var response = await posService.SaveInvoiceAsync(scopedRequest);
             return Ok(response);
         }
         catch (InvalidOperationException ex)

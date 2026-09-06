@@ -78,6 +78,7 @@ function mapMixedPayment(raw: LoadedInvoice['mixedPayment']): MixedModePayment |
 export interface PosFormState {
   buyerId?: number;
   customerName: string;
+  customerCode: string;
   mobile: string;
   address: string;
   remarks: string;
@@ -112,6 +113,7 @@ export interface PosFormState {
 
 const initialState: PosFormState = {
   customerName: '',
+  customerCode: '',
   mobile: '',
   address: '',
   remarks: '',
@@ -151,6 +153,7 @@ const posSlice = createSlice({
     setCustomer(state, action: PayloadAction<CustomerSearchResult & { ledgerDue?: number }>) {
       state.buyerId = action.payload.buyerId;
       state.customerName = action.payload.buyerName ?? action.payload.name ?? "";
+      state.customerCode = action.payload.code ?? '';
       state.mobile = action.payload.phone ?? '';
       state.address = action.payload.address ?? '';
       state.ledgerDue = action.payload.ledgerDue ?? 0;
@@ -259,6 +262,7 @@ const posSlice = createSlice({
       const snapshot = action.payload;
       state.buyerId = snapshot.buyerId;
       state.customerName = snapshot.customerName;
+      state.customerCode = snapshot.customerCode ?? '';
       state.mobile = snapshot.mobile;
       state.address = snapshot.address;
       state.remarks = snapshot.remarks;
@@ -300,6 +304,7 @@ const posSlice = createSlice({
       state.salesOrderNo = invoice.salesOrderNo ?? '';
       state.buyerId = invoice.buyerId;
       state.customerName = invoice.customerName;
+      state.customerCode = invoice.customerCode ?? '';
       state.mobile = invoice.mobile ?? '';
       state.address = invoice.address ?? '';
       state.remarks = invoice.remarks ?? '';
@@ -317,6 +322,7 @@ const posSlice = createSlice({
       state.vatAit = invoice.vatAit;
       state.othersCharge = invoice.othersCharge;
       state.givenAmount = invoice.givenAmount;
+      state.ledgerDue = invoice.previousDues ?? 0;
       state.mixedPayment = mapMixedPayment(invoice.mixedPayment);
       state.cardPayment = invoice.cardPayment as CardPayment | undefined;
       state.deletedLineIds = [];
@@ -360,6 +366,7 @@ const posSlice = createSlice({
     }>) {
       state.buyerId = undefined;
       state.customerName = '';
+      state.customerCode = '';
       state.mobile = '';
       state.address = '';
       state.remarks = '';
