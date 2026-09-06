@@ -1,10 +1,10 @@
 {
-  "companyId": 3,
-  "companyName": "Sami Telecom-CM",
-  "locationId": 33,
+  "companyId": 1,
+  "companyName": "DEMO TEST",
+  "locationId": 1,
   "locationName": "Head office",
-  "securityUserId": 20240,
+  "securityUserId": 1,
   "securityUserName": "DATABIZ",
-  "employeeId": 281,
+  "employeeId": 1,
   "employeeName": "DATABIZ"
 }
