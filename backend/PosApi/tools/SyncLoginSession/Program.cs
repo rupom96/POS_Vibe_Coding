@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 
-const long securityUserId = 20240;
+const long securityUserId = 1;
 
 static string FindRepoRoot()
 {

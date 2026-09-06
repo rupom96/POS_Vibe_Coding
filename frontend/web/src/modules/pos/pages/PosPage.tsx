@@ -1918,7 +1918,7 @@ export function PosPage() {
                     onHoverLeave={() => setCustTip((t) => (t.visible ? { ...t, visible: false } : t))}
                   />
                 </div>
-                <div className="fr fr-duo">
+                <div className="fr fr-duo fr-duo--code">
                   <div className="fr-duo-cell">
                     <span className="fl">Mobile No</span>
                     <CustomerSearchInput
@@ -1932,7 +1932,7 @@ export function PosPage() {
                       onSelect={selectCustomer}
                     />
                   </div>
-                  <div className="fr-duo-cell">
+                  <div className="fr-duo-cell fr-duo-cell--compact">
                     <span className="fl">Code</span>
                     <CustomerSearchInput
                       value={form.customerCode}
