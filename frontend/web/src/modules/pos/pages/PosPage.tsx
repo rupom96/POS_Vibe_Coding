@@ -12,6 +12,7 @@ import { CustomerStatsTip } from '../components/CustomerStatsTip';
 import { PriceHistoryTip } from '../components/PriceHistoryTip';
 import { useToast } from '../../../shared/components/Toast';
 import { getLoginSession, posSession } from '../../../config/posSession';
+import { openBr2InvoiceReportWithSalesOrder, openBr2IndividualDeliveryChallan } from '../utils/openBr2InvoiceReport';
 import { PosItemsTable, type PosItemsTableHandle } from '../components/grid/PosItemsTable';
 import { SerialModal } from '../components/modals/SerialModal';
 import { StatusBar } from '../components/layout/StatusBar';
@@ -304,6 +305,8 @@ export function PosPage() {
   const [moreModalOpen, setMoreModalOpen] = useState(false);
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [invoicePosModalOpen, setInvoicePosModalOpen] = useState(false);
+  const [invoicePosAutoPrint, setInvoicePosAutoPrint] = useState(false);
+  const invoicePosPrintWinRef = useRef<Window | null>(null);
   const [challanModalOpen, setChallanModalOpen] = useState(false);
   const [holdModalOpen, setHoldModalOpen] = useState(false);
   const [heldInvoices, setHeldInvoices] = useState<HeldInvoiceRecord[]>([]);
@@ -1845,8 +1848,28 @@ export function PosPage() {
       showToast('Load a saved invoice first, then print', '⚠');
       return;
     }
-    if (kind === 'pos') setInvoicePosModalOpen(true);
-    else setReportModalOpen(true);
+    if (kind === 'pos') {
+      // Open print window in the same user-click (avoids Chrome popup blocker on auto-print).
+      // Use a ref (not state) so the modal sees the window immediately.
+      invoicePosPrintWinRef.current = window.open('', '_blank', 'width=620,height=880');
+      setInvoicePosAutoPrint(true);
+      setInvoicePosModalOpen(true);
+      return;
+    }
+    // Report → BR2 Crystal InvoiceSummary_SMART.rpt (InvoiceReportWithSalesOrder)
+    const result = openBr2InvoiceReportWithSalesOrder(invoiceNo);
+    if (!result.ok) showToast(result.error ?? 'Could not open invoice report', '⚠');
+  }, [form.invoiceNo, form.salesOrderId, showToast]);
+
+  const openDeliveryChallanReport = useCallback(() => {
+    const invoiceNo = form.invoiceNo.trim();
+    if (!invoiceNo || !form.salesOrderId) {
+      showToast('Load a saved invoice first, then open challan', '⚠');
+      return;
+    }
+    // Challan → BR2 Crystal IndividualDeliveryChallan.rpt
+    const result = openBr2IndividualDeliveryChallan(invoiceNo);
+    if (!result.ok) showToast(result.error ?? 'Could not open delivery challan', '⚠');
   }, [form.invoiceNo, form.salesOrderId, showToast]);
 
   return (
@@ -2266,7 +2289,7 @@ export function PosPage() {
               onHold={() => void handleHoldInvoice()}
               onClear={onClearAll}
               onReport={() => openInvoicePrint('report')}
-              onChallan={() => setChallanModalOpen(true)}
+              onChallan={openDeliveryChallanReport}
               onExchange={() => {
                 if (isInvoiceReadOnly) return;
                 setExchangeModalOpen(true);
@@ -2401,8 +2424,17 @@ export function PosPage() {
 
       <InvoicePosPrintModal
         open={invoicePosModalOpen}
-        onClose={() => setInvoicePosModalOpen(false)}
+        onClose={() => {
+          setInvoicePosModalOpen(false);
+          setInvoicePosAutoPrint(false);
+          if (invoicePosPrintWinRef.current && !invoicePosPrintWinRef.current.closed) {
+            try { invoicePosPrintWinRef.current.close(); } catch { /* ignore */ }
+          }
+          invoicePosPrintWinRef.current = null;
+        }}
         salesPersonName={selectedSalesPerson?.name ?? '—'}
+        autoPrint={invoicePosAutoPrint}
+        printTargetWindowRef={invoicePosPrintWinRef}
       />
 
       <InvoiceReportModal

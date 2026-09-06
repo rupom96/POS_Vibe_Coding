@@ -413,13 +413,15 @@ function paperPrintCss(paper: PrintPaper): string {
 export function printHtmlElement(
   source: HTMLElement | null,
   title: string,
-  options?: { paper?: PrintPaper },
+  options?: { paper?: PrintPaper; targetWindow?: Window | null },
 ): boolean {
   if (!source) return false;
 
   const paper = options?.paper ?? 'A4';
   const features = paper === 'A5' ? 'width=620,height=880' : 'width=900,height=1100';
-  const win = window.open('', '_blank', features);
+  const win = options?.targetWindow && !options.targetWindow.closed
+    ? options.targetWindow
+    : window.open('', '_blank', features);
   if (!win) return false;
 
   try {
