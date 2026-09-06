@@ -11,10 +11,6 @@ import {
 import { useDebouncedCallback } from '../../utils/debounce';
 import { useAutocompleteMenu } from '../../utils/useAutocompleteMenu';
 
-function serialKey(serialNo: string) {
-  return serialNo.trim().toLowerCase();
-}
-
 export const SerialSearchInput = memo(function SerialSearchInput({
   productId,
   locationId,
@@ -114,42 +110,11 @@ export const SerialSearchInput = memo(function SerialSearchInput({
       setHighlight(-1);
       return;
     }
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-
-    if (highlight >= 0 && options[highlight]) {
-      pick(options[highlight]);
-      return;
+    if (e.key === 'Enter') {
+      // Search-only: serials are added by clicking a row in the serial box.
+      e.preventDefault();
     }
-
-    const typed = filterText.trim();
-    if (!typed) return;
-    const exact = options.find((o) => serialKey(o.serialNo) === serialKey(typed));
-    if (exact) {
-      pick(exact);
-      setFilterText('');
-      void loadOptions('');
-      return;
-    }
-    if ((maxAddable ?? 1) <= 0) {
-      onStockLimit?.();
-      return;
-    }
-    onAdd([{ serialNo: typed, discountAmount: 0 }]);
-    setFilterText('');
-    void loadOptions('');
-  }, [
-    filterText,
-    highlight,
-    loadOptions,
-    maxAddable,
-    moveDown,
-    moveUp,
-    onAdd,
-    onStockLimit,
-    options,
-    pick,
-  ]);
+  }, [moveDown, moveUp, options.length]);
 
   const emptyLabel = loading
     ? 'Loading serials…'

@@ -27,6 +27,7 @@ public class PosService(
     IDbConnectionFactory db,
     ICustomerService customerService,
     IProductService productService,
+    IInvoiceNotificationService invoiceNotificationService,
     IOptions<PosSettings> settings) : IPosService
 {
     private const long VatTaxId = 2;
@@ -124,6 +125,7 @@ public class PosService(
                 so.SalesOrderNo,
                 so.BuyerId,
                 ISNULL(b.Name, '') AS CustomerName,
+                b.Code AS CustomerCode,
                 b.Phone AS Mobile,
                 b.Address,
                 so.Remarks,
@@ -140,6 +142,7 @@ public class PosService(
                 ISNULL(so.TotalCharge, 0) AS OthersCharge,
                 so.TotalAmount,
                 ISNULL(pos.GivenAmount, so.ReceiveAmount) AS GivenAmount,
+                ISNULL(so.PreviousDues, 0) AS PreviousDues,
                 sodel.DeliveryAddress
             FROM SalesOrder so
             LEFT JOIN Buyer b ON b.BuyerId = so.BuyerId
@@ -260,6 +263,7 @@ public class PosService(
             header.SalesOrderNo,
             header.BuyerId,
             header.CustomerName,
+            header.CustomerCode,
             header.Mobile,
             header.Address,
             header.Remarks,
@@ -278,6 +282,7 @@ public class PosService(
             header.OthersCharge,
             header.GivenAmount,
             header.TotalAmount,
+            header.PreviousDues,
             mixedPayment,
             cardPayment,
             lines);
@@ -380,6 +385,14 @@ public class PosService(
         if (request.BiznessEventTypeId <= 0)
             throw new InvalidOperationException("Bizness event type is required.");
 
+        if (request.CompanyId <= 0)
+            throw new InvalidOperationException("Company is required.");
+
+        if (request.LocationId <= 0)
+            throw new InvalidOperationException("Location is required.");
+
+        var companyId = request.CompanyId;
+
         if (request.ProjectId is null or <= 0)
             throw new InvalidOperationException("Project is required.");
 
@@ -443,7 +456,7 @@ public class PosService(
 
             // BackDateEntrySales OFF â†’ lock date (new = now; edit = existing InvoiceDate).
             var invoiceDate = request.InvoiceDate;
-            if (!await IsFeatureAllowedAsync(conn, tx, _settings.CompanyId, "BackDateEntrySales"))
+            if (!await IsFeatureAllowedAsync(conn, tx, companyId, "BackDateEntrySales"))
             {
                 if (isEdit)
                 {
@@ -542,7 +555,7 @@ public class PosService(
             else
             {
                 var numberCtx = new BiznessEventDocumentNumberService.GenerateContext(
-                    CompanyId: _settings.CompanyId,
+                    CompanyId: companyId,
                     LocationId: request.LocationId,
                     PaymentModeId: request.PaymentModeId,
                     BiznessEventTypeId: request.BiznessEventTypeId,
@@ -592,7 +605,7 @@ public class PosService(
                     InvoiceDiscountType = discountType,
                     InvoicedBy = approvedBy,
                     PreviousDues = previousDues,
-                    CompanyId = _settings.CompanyId,
+                    CompanyId = companyId,
                     LocationId = request.LocationId,
                     DateOFEntry = now,
                     InvoiceDate = invoiceDate,
@@ -718,7 +731,7 @@ public class PosService(
                 foreach (var (detailId, line) in costTargets)
                 {
                     var unitCost = await PosStockService.ComputeLineUnitCostAsync(
-                        conn, tx, _settings.CompanyId, request.LocationId, line);
+                        conn, tx, companyId, request.LocationId, line);
 
                     await conn.ExecuteAsync(
                         """
@@ -735,7 +748,7 @@ public class PosService(
                 await PosStockService.ApplyEditStockAsync(
                     conn,
                     tx,
-                    _settings.CompanyId,
+                    companyId,
                     request.LocationId,
                     entryBy,
                     salesOrderNo,
@@ -756,7 +769,7 @@ public class PosService(
                 var unitCost = await PosStockService.ComputeLineUnitCostAsync(
                     conn,
                     tx,
-                    _settings.CompanyId,
+                    companyId,
                     request.LocationId,
                     line);
 
@@ -775,7 +788,7 @@ public class PosService(
                 await PosStockService.DeductForInvoiceAsync(
                     conn,
                     tx,
-                    _settings.CompanyId,
+                    companyId,
                     request.LocationId,
                     linesNeedingCostAndDeduct.Select(x => x.Line).ToList());
             }
@@ -832,7 +845,7 @@ public class PosService(
                     biznessEventTypeId: request.BiznessEventTypeId,
                     userId: entryBy,
                     locationId: request.LocationId,
-                    companyId: _settings.CompanyId,
+                    companyId: companyId,
                     projectId: projectId);
             }
 
@@ -841,7 +854,7 @@ public class PosService(
                 conn,
                 tx,
                 request,
-                _settings.CompanyId,
+                companyId,
                 buyerId,
                 salesOrderId,
                 invoiceNo,
@@ -852,6 +865,11 @@ public class PosService(
                 entryBy);
 
             await tx.CommitAsync();
+
+            if (!isEdit)
+            {
+                await invoiceNotificationService.TrySendNewInvoiceSmsAsync(companyId, buyerId, invoiceNo);
+            }
 
             return new SaveInvoiceResponse(
                 salesOrderId,
@@ -1321,6 +1339,7 @@ public class PosService(
         public string SalesOrderNo { get; set; } = string.Empty;
         public long BuyerId { get; set; }
         public string CustomerName { get; set; } = string.Empty;
+        public string? CustomerCode { get; set; }
         public string? Mobile { get; set; }
         public string? Address { get; set; }
         public string? Remarks { get; set; }
@@ -1338,6 +1357,7 @@ public class PosService(
         public decimal OthersCharge { get; set; }
         public decimal GivenAmount { get; set; }
         public decimal TotalAmount { get; set; }
+        public decimal PreviousDues { get; set; }
     }
 
     private sealed class InvoiceDetailRow

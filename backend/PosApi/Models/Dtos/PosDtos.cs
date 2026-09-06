@@ -51,6 +51,7 @@ public record SaveInvoiceCardPaymentRequest(
     bool Confirmed);
 
 public record SaveInvoiceRequest(
+    long CompanyId,
     Guid? SalesOrderId,
     long? BuyerId,
     string? CustomerName,
@@ -173,6 +174,7 @@ public record LoadedInvoiceDto(
     string SalesOrderNo,
     long BuyerId,
     string CustomerName,
+    string? CustomerCode,
     string? Mobile,
     string? Address,
     string? Remarks,
@@ -191,6 +193,8 @@ public record LoadedInvoiceDto(
     decimal OthersCharge,
     decimal GivenAmount,
     decimal GrandTotal,
+    /// <summary>Buyer ledger due captured at save — SalesOrder.PreviousDues.</summary>
+    decimal PreviousDues,
     SaveInvoiceMixedPaymentRequest? MixedPayment,
     SaveInvoiceCardPaymentRequest? CardPayment,
     IReadOnlyList<LoadedInvoiceLineDto> Lines);

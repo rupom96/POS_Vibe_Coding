@@ -14,6 +14,7 @@ public interface ICustomerService
     Task<CustomerStatsDto?> GetStatsAsync(long buyerId);
     Task<CustomerDto> CreateAsync(CreateCustomerRequest request);
     Task<decimal> GetLedgerDueAsync(long buyerId, long? userId = null);
+    Task<BuyerPreferredPaymentModeDto> GetPreferredPaymentModeAsync(long buyerId);
 }
 
 public class CustomerService(IDbConnectionFactory db) : ICustomerService
@@ -36,7 +37,8 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
         var sql = $"""
             SELECT TOP (@Limit)
                 b.BuyerId,
-                LTRIM(RTRIM(ISNULL(b.Initial, '') + ' ' + b.Name)) AS BuyerName,
+                b.Name AS BuyerName,
+                b.Code,
                 b.Phone,
                 b.Address,
                 emp.EmployeeId,
@@ -99,7 +101,8 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
         var sql = $"""
             SELECT
                 b.BuyerId,
-                LTRIM(RTRIM(ISNULL(b.Initial, '') + ' ' + b.Name)) AS Name,
+                b.Name,
+                b.Code,
                 b.Phone,
                 b.Address,
                 b.Initial,
@@ -165,7 +168,6 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
         var phone = request.Phone.Trim();
         var address = request.Address?.Trim();
         var remarks = request.Remarks?.Trim();
-        var openingDate = new DateTime(2017, 12, 31);
         var normalizedName = BuyerNormalization.NormalizeName(name);
         var normalizedPhone = BuyerNormalization.NormalizePhone(phone);
 
@@ -179,6 +181,8 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
         try
         {
             await EnsureUniquePhoneAsync(conn, tx, companyId, normalizedPhone);
+
+            var openingDate = await GetCompanyOpeningDateAsync(conn, tx, companyId);
 
             // Never auto-combine with supplier / existing parties on POS create (TC-03).
             var buyerCode = await PartyCodeGenerator.GenerateBuyerCodeAsync(
@@ -239,6 +243,26 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
         }
     }
 
+    private static async Task<DateTime> GetCompanyOpeningDateAsync(
+        IDbConnection conn,
+        IDbTransaction tx,
+        long companyId)
+    {
+        var openingDate = await conn.QueryFirstOrDefaultAsync<DateTime?>(
+            """
+            SELECT OpeningDate
+            FROM Company
+            WHERE CompanyId = @CompanyId
+            """,
+            new { CompanyId = companyId },
+            tx);
+
+        if (openingDate is null)
+            throw new InvalidOperationException($"Company opening date is not configured for CompanyId {companyId}.");
+
+        return openingDate.Value;
+    }
+
     private static async Task EnsureUniquePhoneAsync(
         IDbConnection conn,
         IDbTransaction tx,
@@ -272,8 +296,54 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
         return row is null ? 0 : Convert.ToDecimal(row.LedgerDue);
     }
 
+    public async Task<BuyerPreferredPaymentModeDto> GetPreferredPaymentModeAsync(long buyerId)
+    {
+        using var conn = db.CreateConnection();
+
+        var agreementModeId = await conn.ExecuteScalarAsync<long?>("""
+            SELECT TOP 1 bac.PreferredPaymentModeId
+            FROM Buyer_AgreementCredit bac
+            WHERE bac.BuyerId = @BuyerId
+              AND bac.PreferredPaymentModeId IS NOT NULL
+              AND bac.PreferredPaymentModeId > 0
+            ORDER BY bac.PreferredPaymentModeId
+            """, new { BuyerId = buyerId });
+
+        if (agreementModeId is not > 0)
+            return new BuyerPreferredPaymentModeDto();
+
+        var mode = await conn.QueryFirstOrDefaultAsync<PaymentModeParentRow>("""
+            SELECT PaymentModeId, ParentId
+            FROM PaymentMode
+            WHERE PaymentModeId = @PaymentModeId
+            """, new { PaymentModeId = agreementModeId.Value });
+
+        if (mode is null)
+            return new BuyerPreferredPaymentModeDto();
+
+        if (mode.ParentId is > 0)
+        {
+            return new BuyerPreferredPaymentModeDto
+            {
+                PaymentModeId = mode.ParentId,
+                SubPaymentModeId = mode.PaymentModeId,
+            };
+        }
+
+        return new BuyerPreferredPaymentModeDto
+        {
+            PaymentModeId = mode.PaymentModeId,
+        };
+    }
+
     private sealed class BuyerCurrentFinancialRow
     {
         public double LedgerDue { get; set; }
+    }
+
+    private sealed class PaymentModeParentRow
+    {
+        public long PaymentModeId { get; set; }
+        public long? ParentId { get; set; }
     }
 }

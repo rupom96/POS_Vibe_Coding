@@ -11,7 +11,7 @@ import { SalesPersonSearchInput } from '../components/SalesPersonSearchInput';
 import { CustomerStatsTip } from '../components/CustomerStatsTip';
 import { PriceHistoryTip } from '../components/PriceHistoryTip';
 import { useToast } from '../../../shared/components/Toast';
-import { posSession } from '../../../config/posSession';
+import { getLoginSession, posSession } from '../../../config/posSession';
 import { PosItemsTable, type PosItemsTableHandle } from '../components/grid/PosItemsTable';
 import { SerialModal } from '../components/modals/SerialModal';
 import { StatusBar } from '../components/layout/StatusBar';
@@ -42,6 +42,7 @@ import {
   useGetReferencesQuery,
   useGetSalesPersonsQuery,
   useLazyGetCustomerLedgerDueQuery,
+  useLazyGetCustomerPreferredPaymentModeQuery,
   useLazyGetPriceHistoryQuery,
   useLazyGetProductQuery,
   useLazyGetProductPriceQuery,
@@ -76,7 +77,7 @@ import {
 } from '../offline/posOfflineStorage';
 import { hasSnapshotContent, toSnapshot } from '../offline/posSnapshot';
 import type { HeldInvoiceRecord } from '../offline/posDb';
-import type { CardPayment, CustomerSearchResult, InvoiceLine, InvoiceSearchResult, MixedModePayment, MultiScanResult, MultiScanSearchItem, MultiScanSerialItem, PaymentMode, ProductDetail, ProductSearchResult, ReferenceOption, SalesPerson, SaveInvoiceResponse } from '../types';
+import type { BuyerPreferredPaymentMode, CardPayment, CustomerSearchResult, InvoiceLine, InvoiceSearchResult, MixedModePayment, MultiScanResult, MultiScanSearchItem, MultiScanSerialItem, PaymentMode, ProductDetail, ProductSearchResult, ReferenceOption, SalesPerson, SaveInvoiceResponse } from '../types';
 import { generateId } from '../../../shared/utils/generateId';
 import { connectPosRelay, setRemoteArmState } from '../utils/scanRelay';
 import { REMOTE_FEED_TIMEOUT_MS } from '../utils/remotePreview';
@@ -85,6 +86,9 @@ import { isSubPaymentMode } from '../types';
 import { calcLineTotal, formatCurrency, formatNumber, formatStockDisplay, isLineFilled, isServiceProduct, newLineId } from '../utils/format';
 import { isCardPaymentMode, isMixedPaymentMode } from '../utils/paymentMode';
 import { formatValidationErrors, validateInvoiceForSave } from '../utils/validateInvoice';
+import { confirmMergeSamePriceLines } from '../utils/confirmMergeSamePriceLines';
+import { findSameProductPriceMatches, planSamePriceMerge } from '../utils/samePriceLineMerge';
+import { findIncompleteQtyOrPrice, incompleteQtyPriceMessage } from '../utils/incompleteQtyPrice';
 import '../styles/pos.css';
 
 interface ReceiptData {
@@ -198,7 +202,10 @@ export function PosPage() {
   const { data: salesPersons = [] } = useGetSalesPersonsQuery({ companyId: posSession.companyId });
   const { data: references = [] } = useGetReferencesQuery({ companyId: posSession.companyId });
   const { data: banks = [] } = useGetBanksQuery({ companyId: posSession.companyId });
-  const { data: posFeatures } = useGetPosFeaturesQuery({ companyId: posSession.companyId, securityUserId: posSession.securityUserId });
+  const { data: posFeatures, isLoading: posFeaturesLoading } = useGetPosFeaturesQuery(
+    { companyId: posSession.companyId, securityUserId: posSession.securityUserId },
+    { skip: posSession.companyId <= 0 || posSession.securityUserId <= 0 },
+  );
   const { data: biznessEventTypes = [] } = useGetBiznessEventTypesQuery({
     companyId: posSession.companyId,
     locationId: form.locationId,
@@ -214,6 +221,24 @@ export function PosPage() {
   // BackDateEntrySales ON → Inv. Date editable (past/future). OFF → read-only current date.
   const invoiceDateEditable = posFeatures?.backDateEntrySales === true;
   const salesWithoutPriceSetup = posFeatures?.salesWithoutPriceSetup === true;
+  const posMultiplePriceSales = posFeatures?.posMultiplePriceSales === true;
+  const canViewProductCost = posFeatures?.canViewProductCost === true;
+  const restrictedPaymentModeInPos = posFeatures?.restrictedPaymentModeInPos === true;
+  /** Avoid duplicate preferred-payment-mode calls per buyer (incl. when features load after pick). */
+  const preferredModeBuyerRef = useRef<number | null>(null);
+  /** Last preferred-payment-mode API result for the current buyer. */
+  const buyerPreferredPaymentRef = useRef<BuyerPreferredPaymentMode | null>(null);
+  const [preferredPaymentVersion, setPreferredPaymentVersion] = useState(0);
+  const bumpPreferredPayment = useCallback(() => {
+    setPreferredPaymentVersion((v) => v + 1);
+  }, []);
+  const clearBuyerPreferredPayment = useCallback(() => {
+    preferredModeBuyerRef.current = null;
+    buyerPreferredPaymentRef.current = null;
+    bumpPreferredPayment();
+  }, [bumpPreferredPayment]);
+  /** Session-only: remembered Yes/No for same-product+price merge until full page refresh. */
+  const samePriceMergeDecisionRef = useRef<'merge' | 'skip' | null>(null);
   /** Loaded invoices only. Resolved once; do not re-check PosSalesEdit in child components. */
   const isExistingInvoiceLoaded = Boolean(form.salesOrderId);
   const posSalesEditAllowed = posFeatures?.posSalesEdit === true;
@@ -233,6 +258,13 @@ export function PosPage() {
   }, [biznessEventTypes, dispatch, form.biznessEventTypeId]);
 
   useEffect(() => {
+    const session = getLoginSession();
+    if (session.locationId > 0 && form.locationId !== session.locationId) {
+      dispatch(updateField({ key: 'locationId', value: session.locationId }));
+    }
+  }, [dispatch, form.locationId]);
+
+  useEffect(() => {
     if (projects.length === 0) return;
     const current = projects.find((p) => p.projectId === form.projectId);
     if (current) return;
@@ -244,6 +276,7 @@ export function PosPage() {
   }, [projects, dispatch, form.projectId]);
 
   const [getLedgerDue] = useLazyGetCustomerLedgerDueQuery();
+  const [getPreferredPaymentMode] = useLazyGetCustomerPreferredPaymentModeQuery();
   const [getProduct] = useLazyGetProductQuery();
   const [searchProducts] = useLazySearchProductsQuery();
   const [getPriceHistory] = useLazyGetPriceHistoryQuery();
@@ -287,8 +320,9 @@ export function PosPage() {
   const [hoverHistory, setHoverHistory] = useState<{ label: string; value: number }[]>([]);
   const [tipPos, setTipPos] = useState({ x: 0, y: 0 });
   const [custTip, setCustTip] = useState({ visible: false, x: 0, y: 0 });
-  const hoverCache = useRef(new Map<number, { product: ProductDetail; history: { label: string; value: number }[] }>());
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const hoverRectRef = useRef<DOMRect | null>(null);
+  const hoverFetchGenRef = useRef(0);
   const scanRelayRef = useRef<HubConnection | null>(null);
   const remoteScanHandlerRef = useRef<((text: string) => void) | null>(null);
   const scanModalOpenRef = useRef(false);
@@ -299,6 +333,23 @@ export function PosPage() {
   const linesRef = useRef(form.lines);
   linesRef.current = form.lines;
   const onClearAllRef = useRef<() => void>(() => {});
+
+  const requireCompleteProductRows = useCallback((beforeLineId?: string) => {
+    const hit = findIncompleteQtyOrPrice(
+      linesRef.current,
+      beforeLineId ? { beforeLineId } : undefined,
+    );
+    if (!hit) return true;
+    showToast(incompleteQtyPriceMessage(hit), '⚠');
+    itemsTableRef.current?.focusLineField(hit.line.id, hit.field);
+    return false;
+  }, [showToast]);
+
+  const focusAfterProductApplied = useCallback((lineId: string) => {
+    window.requestAnimationFrame(() => {
+      itemsTableRef.current?.focusAfterProductApplied(lineId);
+    });
+  }, []);
 
   const { data: customerStats } = useGetCustomerStatsQuery(form.buyerId ?? 0, {
     skip: !form.buyerId || !custTip.visible,
@@ -330,7 +381,8 @@ export function PosPage() {
     setMixedModalOpen(false);
     setCardModalOpen(false);
     prevPayModeIdRef.current = 0;
-  }, []);
+    clearBuyerPreferredPayment();
+  }, [clearBuyerPreferredPayment]);
 
   const handleHoldInvoice = useCallback(async (closeModalAfter = false) => {
     if (isInvoiceReadOnlyRef.current) {
@@ -401,6 +453,7 @@ export function PosPage() {
   }, [dispatch, form.subPaymentModeId, paymentModes]);
 
   useEffect(() => {
+    if (restrictedPaymentModeInPos) return;
     if (parentPaymentModes.length === 0) return;
     const current = parentPaymentModes.find((m) => m.paymentModeId === form.paymentModeId);
     if (current) return;
@@ -409,7 +462,7 @@ export function PosPage() {
       key: 'paymentModeId',
       value: cashMode?.paymentModeId ?? parentPaymentModes[0].paymentModeId,
     }));
-  }, [dispatch, parentPaymentModes, form.paymentModeId]);
+  }, [dispatch, form.paymentModeId, parentPaymentModes, restrictedPaymentModeInPos]);
 
   const onSubPaymentModeChange = useCallback((subPaymentModeId: number) => {
     if (!subPaymentModeId) {
@@ -453,12 +506,13 @@ export function PosPage() {
 
   const closeMixedMode = useCallback(() => {
     setMixedModalOpen(false);
+    if (form.mixedPayment?.confirmed) return;
     const cashMode = parentPaymentModes.find((m) => m.name.trim().toLowerCase() === 'cash');
     const revertId = cashMode?.paymentModeId ?? prevPayModeIdRef.current ?? 0;
     onPaymentModeChange(revertId);
     dispatch(updateField({ key: 'mixedPayment', value: undefined }));
     dispatch(updateField({ key: 'givenAmount', value: 0 }));
-  }, [dispatch, onPaymentModeChange, parentPaymentModes]);
+  }, [dispatch, form.mixedPayment, onPaymentModeChange, parentPaymentModes]);
 
   const confirmMixedMode = useCallback((payment: MixedModePayment) => {
     const cardTotal = payment.cards.reduce((sum, c) => sum + (c.amount || 0), 0);
@@ -472,11 +526,12 @@ export function PosPage() {
 
   const closeCardMode = useCallback(() => {
     setCardModalOpen(false);
+    if (form.cardPayment?.confirmed) return;
     const cashMode = parentPaymentModes.find((m) => m.name.trim().toLowerCase() === 'cash');
     const revertId = cashMode?.paymentModeId ?? prevPayModeIdRef.current ?? 0;
     onPaymentModeChange(revertId);
     dispatch(updateField({ key: 'cardPayment', value: undefined }));
-  }, [dispatch, onPaymentModeChange, parentPaymentModes]);
+  }, [dispatch, form.cardPayment, onPaymentModeChange, parentPaymentModes]);
 
   const confirmCardMode = useCallback((payment: CardPayment) => {
     dispatch(updateField({ key: 'cardPayment', value: payment }));
@@ -497,6 +552,120 @@ export function PosPage() {
   const onSubPayModeClear = useCallback(() => {
     onSubPaymentModeChange(0);
   }, [onSubPaymentModeChange]);
+
+  const clearPaymentModeSelection = useCallback(() => {
+    dispatch(updateField({ key: 'paymentModeId', value: 0 }));
+    dispatch(updateField({ key: 'subPaymentModeId', value: undefined }));
+    dispatch(updateField({ key: 'mixedPayment', value: undefined }));
+    dispatch(updateField({ key: 'cardPayment', value: undefined }));
+    dispatch(updateField({ key: 'givenAmount', value: 0 }));
+  }, [dispatch]);
+
+  const applyBuyerPreferredPaymentMode = useCallback(async (buyerId: number) => {
+    try {
+      const preferred = await getPreferredPaymentMode(buyerId).unwrap();
+      buyerPreferredPaymentRef.current = preferred;
+      bumpPreferredPayment();
+
+      const locked =
+        (preferred.paymentModeId != null && preferred.paymentModeId > 0)
+        || (preferred.subPaymentModeId != null && preferred.subPaymentModeId > 0);
+
+      if (!locked) {
+        clearPaymentModeSelection();
+        return;
+      }
+
+      if (preferred.subPaymentModeId && preferred.subPaymentModeId > 0) {
+        const sub = paymentModes.find((m) => m.paymentModeId === preferred.subPaymentModeId);
+        if (sub?.parentId) {
+          onSubPaymentModeChange(sub.paymentModeId);
+          const parent = paymentModes.find((m) => m.paymentModeId === sub.parentId);
+          if (parent && isCardPaymentMode(parent)) {
+            setCardModalOpen(true);
+          }
+          return;
+        }
+      }
+
+      if (preferred.paymentModeId && preferred.paymentModeId > 0) {
+        const parentMode = parentPaymentModes.find((m) => m.paymentModeId === preferred.paymentModeId);
+        if (parentMode) {
+          onPayModeSelect(parentMode);
+          return;
+        }
+
+        onPaymentModeChange(preferred.paymentModeId);
+      }
+    } catch {
+      buyerPreferredPaymentRef.current = null;
+      bumpPreferredPayment();
+      clearPaymentModeSelection();
+    }
+  }, [
+    bumpPreferredPayment,
+    clearPaymentModeSelection,
+    getPreferredPaymentMode,
+    onPayModeSelect,
+    onPaymentModeChange,
+    onSubPaymentModeChange,
+    parentPaymentModes,
+    paymentModes,
+  ]);
+
+  const paymentModeDropdownLocked = useMemo(() => {
+    if (!form.buyerId || form.buyerId <= 0) return false;
+    if (preferredModeBuyerRef.current !== form.buyerId) return false;
+    const preferred = buyerPreferredPaymentRef.current;
+    if (!preferred) return false;
+    return (
+      (preferred.paymentModeId != null && preferred.paymentModeId > 0)
+      || (preferred.subPaymentModeId != null && preferred.subPaymentModeId > 0)
+    );
+  }, [form.buyerId, preferredPaymentVersion]);
+
+  useEffect(() => {
+    if (!restrictedPaymentModeInPos || form.salesOrderId) {
+      clearBuyerPreferredPayment();
+      return;
+    }
+    if (!form.buyerId || form.buyerId <= 0) {
+      clearBuyerPreferredPayment();
+      return;
+    }
+    if (paymentModesLoading || parentPaymentModes.length === 0) return;
+    if (preferredModeBuyerRef.current === form.buyerId && buyerPreferredPaymentRef.current) return;
+
+    if (preferredModeBuyerRef.current !== form.buyerId) {
+      buyerPreferredPaymentRef.current = null;
+      bumpPreferredPayment();
+    }
+    preferredModeBuyerRef.current = form.buyerId;
+    void applyBuyerPreferredPaymentMode(form.buyerId);
+  }, [
+    applyBuyerPreferredPaymentMode,
+    bumpPreferredPayment,
+    clearBuyerPreferredPayment,
+    form.buyerId,
+    form.salesOrderId,
+    parentPaymentModes.length,
+    paymentModesLoading,
+    restrictedPaymentModeInPos,
+  ]);
+
+  const payModeHasPopup = isMixedPaymentMode(selectedPayMode) || isCardPaymentMode(selectedPayMode);
+  const reopenPayModePopup = useCallback(() => {
+    if (isInvoiceReadOnlyRef.current) return;
+    if (isMixedPaymentMode(selectedPayMode)) {
+      setCardModalOpen(false);
+      setMixedModalOpen(true);
+      return;
+    }
+    if (isCardPaymentMode(selectedPayMode)) {
+      setMixedModalOpen(false);
+      setCardModalOpen(true);
+    }
+  }, [selectedPayMode]);
 
   const { totalQty, totalAmt, grandTotal, changeAmount, discountAmount } = useInvoiceTotals(
     form.lines,
@@ -520,7 +689,7 @@ export function PosPage() {
       const isDuplicate = linesRef.current.some(
         (l) => l.rowStatus !== 'deleted' && l.id !== lineId && l.productId === product.productId,
       );
-      if (isDuplicate) {
+      if (isDuplicate && !posMultiplePriceSales) {
         showToast(`${product.name} is already added to this invoice`, '⚠');
         dispatch(updateLine({
           id: lineId,
@@ -568,11 +737,12 @@ export function PosPage() {
         showToast('Serial product detected — Enter serials', '🔢');
       }
     },
-    [dispatch, salesWithoutPriceSetup, showToast],
+    [dispatch, posMultiplePriceSales, salesWithoutPriceSetup, showToast],
   );
 
   const selectCustomer = useCallback(async (customer: CustomerSearchResult) => {
     if (isInvoiceReadOnlyRef.current) return;
+    setHoverHistory([]);
     dispatch(setCustomer(customer));
     // LoginUserWiseSalesPersonSet = true → keep current/login sales person (do not overwrite from buyer).
     // LoginUserWiseSalesPersonSet = false/missing → set sales person from the selected buyer.
@@ -592,7 +762,11 @@ export function PosPage() {
     } catch {
       /* ledger optional */
     }
-  }, [dispatch, getLedgerDue, loginUserWiseSalesPersonSet]);
+  }, [
+    dispatch,
+    getLedgerDue,
+    loginUserWiseSalesPersonSet,
+  ]);
 
   const onProductSelect = useCallback(async (lineId: string, product: ProductSearchResult) => {
     if (isInvoiceReadOnlyRef.current) return;
@@ -637,12 +811,19 @@ export function PosPage() {
       }).unwrap();
 
       if (treePickLineId) {
+        const targetLine = linesRef.current.find((l) => l.id === treePickLineId);
+        if (!targetLine?.productId && !requireCompleteProductRows(treePickLineId)) {
+          return;
+        }
         await applyProductToLine(treePickLineId, product);
         setTreePickLineId(null);
         dispatch(ensureTrailingEmptyRow());
+        focusAfterProductApplied(treePickLineId);
         showToast(`Selected: ${product.name}`);
         return;
       }
+
+      if (!requireCompleteProductRows()) return;
 
       const target = resolveTreeTargetLineId();
       if (target.insert) {
@@ -651,18 +832,23 @@ export function PosPage() {
 
       await applyProductToLine(target.lineId, product);
       dispatch(ensureTrailingEmptyRow());
+      focusAfterProductApplied(target.lineId);
       showToast(`Selected: ${product.name}`);
     } catch {
       showToast('Failed to load product', '⚠');
     }
-  }, [applyProductToLine, dispatch, form.locationId, getProduct, resolveTreeTargetLineId, showToast, treePickLineId]);
+  }, [applyProductToLine, dispatch, focusAfterProductApplied, form.locationId, getProduct, requireCompleteProductRows, resolveTreeTargetLineId, showToast, treePickLineId]);
 
   const onSelectProductFromTree = useCallback((lineId: string) => {
     if (isInvoiceReadOnlyRef.current) return;
+    const targetLine = linesRef.current.find((l) => l.id === lineId);
+    if (!targetLine?.productId && !requireCompleteProductRows(lineId)) {
+      return;
+    }
     setTreePickLineId(lineId);
     if (!form.sidebarOpen) dispatch(toggleSidebar());
     showToast('Pick a product from the tree', '🌳');
-  }, [dispatch, form.sidebarOpen, showToast]);
+  }, [dispatch, form.sidebarOpen, requireCompleteProductRows, showToast]);
 
   const onProductNameCommit = useCallback((lineId: string, name: string) => {
     if (isInvoiceReadOnlyRef.current) return;
@@ -692,25 +878,6 @@ export function PosPage() {
     dispatch(updateLine({ id: lineId, patch: { productName: name } }));
   }, [dispatch]);
 
-  /** Remote scan only — prefers data-product-line-id after trailing row is ready. */
-  const focusNextProductLine = useCallback((currentLineId: string) => {
-    dispatch(ensureTrailingEmptyRow());
-    const tryFocus = () => {
-      const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('[data-product-line-id]'));
-      const idx = inputs.findIndex((el) => el.dataset.productLineId === currentLineId);
-      const next = inputs[idx + 1];
-      if (next) {
-        next.focus();
-        return true;
-      }
-      return false;
-    };
-    window.requestAnimationFrame(() => {
-      if (tryFocus()) return;
-      window.requestAnimationFrame(() => { tryFocus(); });
-    });
-  }, [dispatch]);
-
   const focusSaveButton = useCallback(() => {
     saveButtonRef.current?.focus();
   }, []);
@@ -736,13 +903,14 @@ export function PosPage() {
         return;
       }
 
+      if (!requireCompleteProductRows(lineId)) return;
       await onProductSelect(lineId, results[0]);
-      focusNextProductLine(lineId);
+      focusAfterProductApplied(lineId);
       showToast(`Product: ${results[0].name}`);
     } catch {
       showToast('Product search failed', '⚠');
     }
-  }, [focusNextProductLine, form.locationId, onProductSelect, searchProducts, showToast]);
+  }, [focusAfterProductApplied, form.locationId, onProductSelect, requireCompleteProductRows, searchProducts, showToast]);
 
   const applyProductLineRemoteScanRef = useRef(applyProductLineRemoteScan);
   applyProductLineRemoteScanRef.current = applyProductLineRemoteScan;
@@ -887,53 +1055,70 @@ export function PosPage() {
 
   const computeTipPos = useCallback((rect: DOMRect) => {
     const TIP_W = 280;
-    const TIP_H = 190;
+    const TIP_H = canViewProductCost ? 190 : 120;
     let x = rect.left + 40;
     if (x + TIP_W > window.innerWidth - 10) x = window.innerWidth - TIP_W - 12;
     if (x < 10) x = 10;
     let y = rect.top - TIP_H - 8;
     if (y < 10) y = rect.bottom + 8;
     return { x, y };
-  }, []);
+  }, [canViewProductCost]);
 
-  const handleRowHover = useCallback(async (lineId: string | null, rect?: DOMRect) => {
-    if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    setHoverLineId(lineId);
-    if (!lineId || !rect) {
-      setHoverProduct(undefined);
-      return;
-    }
-    hoverTimer.current = setTimeout(async () => {
-      const line = form.lines.find((l) => l.id === lineId);
-      if (!line?.productId) return;
-      const cached = hoverCache.current.get(line.productId);
-      if (cached) {
-        setHoverProduct(cached.product);
-        setHoverHistory(cached.history);
-        setTipPos(computeTipPos(rect));
-        return;
-      }
-      try {
-        const product = await getProduct({
-          productId: line.productId,
-          locationId: form.locationId,
-          companyId: posSession.companyId,
-        }).unwrap();
-        let history: { label: string; value: number }[] = [];
+  const loadHoverTip = useCallback(async (lineId: string, rect: DOMRect, buyerId?: number) => {
+    const line = form.lines.find((l) => l.id === lineId);
+    if (!line?.productId) return;
+    const fetchGen = ++hoverFetchGenRef.current;
+    try {
+      const product = await getProduct({
+        productId: line.productId,
+        locationId: form.locationId,
+        companyId: posSession.companyId,
+      }).unwrap();
+      if (fetchGen !== hoverFetchGenRef.current) return;
+      let history: { label: string; value: number }[] = [];
+      if (buyerId && buyerId > 0) {
         try {
-          history = await getPriceHistory({ productId: line.productId, buyerId: form.buyerId }).unwrap();
+          history = await getPriceHistory({ productId: line.productId, buyerId }).unwrap();
         } catch {
           /* price history is optional — still show product/cost info */
         }
-        hoverCache.current.set(line.productId!, { product, history });
-        setHoverProduct(product);
-        setHoverHistory(history);
-        setTipPos(computeTipPos(rect));
-      } catch {
-        setHoverProduct(undefined);
       }
+      if (fetchGen !== hoverFetchGenRef.current) return;
+      setHoverProduct(product);
+      setHoverHistory(history);
+      setTipPos(computeTipPos(rect));
+    } catch {
+      if (fetchGen !== hoverFetchGenRef.current) return;
+      setHoverProduct(undefined);
+      setHoverHistory([]);
+    }
+  }, [computeTipPos, form.lines, form.locationId, getPriceHistory, getProduct]);
+
+  const handleRowHover = useCallback((lineId: string | null, rect?: DOMRect) => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    setHoverLineId(lineId);
+    if (!lineId || !rect) {
+      hoverRectRef.current = null;
+      hoverFetchGenRef.current += 1;
+      setHoverProduct(undefined);
+      setHoverHistory([]);
+      return;
+    }
+    hoverRectRef.current = rect;
+    hoverTimer.current = setTimeout(() => {
+      void loadHoverTip(lineId, rect, form.buyerId);
     }, 200);
-  }, [form.lines, form.buyerId, form.locationId, getProduct, getPriceHistory, computeTipPos]);
+  }, [form.buyerId, loadHoverTip]);
+
+  const prevHoverBuyerIdRef = useRef(form.buyerId);
+  useEffect(() => {
+    if (prevHoverBuyerIdRef.current === form.buyerId) return;
+    prevHoverBuyerIdRef.current = form.buyerId;
+    setHoverHistory([]);
+    if (hoverLineId && hoverRectRef.current) {
+      void loadHoverTip(hoverLineId, hoverRectRef.current, form.buyerId);
+    }
+  }, [form.buyerId, hoverLineId, loadHoverTip]);
 
   const handleSave = useCallback(async () => {
     if (isInvoiceReadOnlyRef.current) {
@@ -946,7 +1131,13 @@ export function PosPage() {
       ? paymentModes.find((p) => p.paymentModeId === form.paymentModeId)
       : undefined;
 
+    const session = getLoginSession();
+    const saveCompanyId = session.companyId;
+    const saveLocationId = form.locationId > 0 ? form.locationId : session.locationId;
+
     const validationErrors = validateInvoiceForSave({
+      companyId: saveCompanyId,
+      locationId: saveLocationId,
       buyerId: form.buyerId,
       customerName: form.customerName,
       employeeId: form.employeeId,
@@ -1051,6 +1242,7 @@ export function PosPage() {
 
     try {
       const response = await saveInvoice({
+        companyId: saveCompanyId,
         salesOrderId: form.salesOrderId,
         buyerId: form.buyerId,
         customerName: form.customerName,
@@ -1058,7 +1250,7 @@ export function PosPage() {
         address: form.address,
         remarks: form.remarks,
         deliveryAddress: form.deliveryAddress,
-        locationId: form.locationId,
+        locationId: saveLocationId,
         paymentModeId: form.paymentModeId,
         subPaymentModeId: form.subPaymentModeId,
         referenceId: form.referenceId,
@@ -1150,17 +1342,6 @@ export function PosPage() {
           locationId: form.locationId,
         }).unwrap();
         dispatch(loadInvoice(loaded));
-        if (loaded.buyerId) {
-          try {
-            const due = await getLedgerDue({
-              buyerId: loaded.buyerId,
-              userId: posSession.securityUserId,
-            }).unwrap();
-            dispatch(updateField({ key: 'ledgerDue', value: due }));
-          } catch {
-            /* ledger optional */
-          }
-        }
       } catch {
         // Fallback: still leave identity from the save response on the form.
         dispatch(updateField({ key: 'invoiceNo', value: response.invoiceNo }));
@@ -1191,7 +1372,6 @@ export function PosPage() {
     saveLocked,
     saving,
     getInvoice,
-    getLedgerDue,
   ]);
 
   useEffect(() => {
@@ -1265,7 +1445,61 @@ export function PosPage() {
     if (up !== line.unitPrice || patch.discount !== undefined) {
       dispatch(updateLine({ id: lineId, patch }));
     }
-  }, [dispatch, form.lines, showToast]);
+
+    if (!posMultiplePriceSales) return;
+
+    const matches = findSameProductPriceMatches(
+      form.lines,
+      line.productId,
+      up,
+      { lineId, unitPrice: up },
+    );
+    if (matches.length < 2) return;
+
+    const applyMerge = () => {
+      const plan = planSamePriceMerge(matches);
+      if (!plan) return;
+      const keepLine = matches[0].line;
+      let quantity = plan.quantity;
+      if (
+        !isServiceProduct(keepLine.productType)
+        && keepLine.stockQty > 0
+        && quantity > keepLine.stockQty
+      ) {
+        showToast(`Quantity cannot exceed stock (${keepLine.stockQty})`, '⚠');
+        quantity = keepLine.stockQty;
+      }
+      dispatch(updateLine({
+        id: plan.keepId,
+        patch: {
+          unitPrice: up,
+          quantity,
+          serials: plan.serials,
+          ...(keepLine.discount > up ? { discount: up } : {}),
+        },
+      }));
+      for (const id of plan.deleteIds) {
+        dispatch(markLineDeleted(id));
+      }
+    };
+
+    const remembered = samePriceMergeDecisionRef.current;
+    if (remembered === 'merge') {
+      applyMerge();
+      return;
+    }
+    if (remembered === 'skip') return;
+
+    void confirmMergeSamePriceLines({
+      productName: line.productName,
+      rowNos: matches.map((m) => m.rowNo),
+    }).then((choice) => {
+      if (choice.remember) {
+        samePriceMergeDecisionRef.current = choice.merge ? 'merge' : 'skip';
+      }
+      if (choice.merge) applyMerge();
+    });
+  }, [dispatch, form.lines, posMultiplePriceSales, showToast]);
   const onMarkDeleted = useCallback((id: string) => {
     if (isInvoiceReadOnlyRef.current) return;
     dispatch(markLineDeleted(id));
@@ -1276,15 +1510,19 @@ export function PosPage() {
   }, [dispatch]);
   const onClearAll = useCallback(() => {
     dispatch(resetPosForm());
-    // Clear All keeps the default payment mode (Cash) rather than emptying it.
-    const cashMode = parentPaymentModes.find((m) => m.name.trim().toLowerCase() === 'cash');
-    if (cashMode) {
-      dispatch(updateField({ key: 'paymentModeId', value: cashMode.paymentModeId }));
+    if (restrictedPaymentModeInPos) {
+      clearPaymentModeSelection();
+    } else {
+      // Clear All keeps the default payment mode (Cash) rather than emptying it.
+      const cashMode = parentPaymentModes.find((m) => m.name.trim().toLowerCase() === 'cash');
+      if (cashMode) {
+        dispatch(updateField({ key: 'paymentModeId', value: cashMode.paymentModeId }));
+      }
     }
     resetPosUiState();
     setSaveLocked(false);
     void clearPosDraft();
-  }, [dispatch, parentPaymentModes, resetPosUiState]);
+  }, [clearPaymentModeSelection, dispatch, parentPaymentModes, resetPosUiState, restrictedPaymentModeInPos]);
   onClearAllRef.current = onClearAll;
   const onCustomerNameCommit = useCallback((name: string) => {
     if (isInvoiceReadOnlyRef.current) return;
@@ -1292,21 +1530,43 @@ export function PosPage() {
     // Free-typed values never create / keep a buyer master record (TC-07).
     dispatch(updateField({ key: 'buyerId', value: undefined }));
     dispatch(updateField({ key: 'ledgerDue', value: 0 }));
+    if (restrictedPaymentModeInPos) {
+      clearPaymentModeSelection();
+    }
     if (!name.trim()) {
+      dispatch(updateField({ key: 'customerCode', value: '' }));
       dispatch(updateField({ key: 'mobile', value: '' }));
       dispatch(updateField({ key: 'address', value: '' }));
     }
-  }, [dispatch]);
+  }, [clearPaymentModeSelection, dispatch, restrictedPaymentModeInPos]);
   const onMobileCommit = useCallback((mobile: string) => {
     if (isInvoiceReadOnlyRef.current) return;
     dispatch(updateField({ key: 'mobile', value: mobile }));
     dispatch(updateField({ key: 'buyerId', value: undefined }));
     dispatch(updateField({ key: 'ledgerDue', value: 0 }));
+    if (restrictedPaymentModeInPos) {
+      clearPaymentModeSelection();
+    }
     if (!mobile.trim()) {
       dispatch(updateField({ key: 'customerName', value: '' }));
+      dispatch(updateField({ key: 'customerCode', value: '' }));
       dispatch(updateField({ key: 'address', value: '' }));
     }
-  }, [dispatch]);
+  }, [clearPaymentModeSelection, dispatch, restrictedPaymentModeInPos]);
+  const onCustomerCodeCommit = useCallback((code: string) => {
+    if (isInvoiceReadOnlyRef.current) return;
+    dispatch(updateField({ key: 'customerCode', value: code }));
+    dispatch(updateField({ key: 'buyerId', value: undefined }));
+    dispatch(updateField({ key: 'ledgerDue', value: 0 }));
+    if (restrictedPaymentModeInPos) {
+      clearPaymentModeSelection();
+    }
+    if (!code.trim()) {
+      dispatch(updateField({ key: 'customerName', value: '' }));
+      dispatch(updateField({ key: 'mobile', value: '' }));
+      dispatch(updateField({ key: 'address', value: '' }));
+    }
+  }, [clearPaymentModeSelection, dispatch, restrictedPaymentModeInPos]);
   const selectedSalesPerson = useMemo(() => salesPersons.find((sp) => sp.employeeId === form.employeeId) ?? null, [salesPersons, form.employeeId]);
   const selectedReference = useMemo(
     () => references.find((ref) => ref.allCompanyId === form.referenceId) ?? null,
@@ -1346,19 +1606,8 @@ export function PosPage() {
       locationId: form.locationId,
     }).unwrap();
     dispatch(loadInvoice(loaded));
-    if (loaded.buyerId) {
-      try {
-        const due = await getLedgerDue({
-          buyerId: loaded.buyerId,
-          userId: posSession.securityUserId,
-        }).unwrap();
-        dispatch(updateField({ key: 'ledgerDue', value: due }));
-      } catch {
-        /* ledger optional */
-      }
-    }
     showToast(`Loaded ${loaded.invoiceNo}`, '📄');
-  }, [dispatch, form.locationId, getInvoice, getLedgerDue, showToast]);
+  }, [dispatch, form.locationId, getInvoice, showToast]);
 
   const applySerialScan = useCallback(async (serial: MultiScanSerialItem) => {
     if (isInvoiceReadOnlyRef.current) return;
@@ -1400,6 +1649,8 @@ export function PosPage() {
         companyId: posSession.companyId,
       }).unwrap();
 
+      if (!requireCompleteProductRows()) return;
+
       const target = resolveTreeTargetLineId();
       if (target.insert) {
         dispatch(insertLineAtIndex({ index: target.index, id: target.lineId }));
@@ -1432,11 +1683,12 @@ export function PosPage() {
         );
       }
       void applyPosSalesPrice(target.lineId, product.productId, 1);
+      focusAfterProductApplied(target.lineId);
       showToast(`Serial added: ${serial.serialNo}`);
     } catch {
       showToast('Failed to add serial product', '⚠');
     }
-  }, [applyPosSalesPrice, dispatch, form.lines, form.locationId, getProduct, resolveTreeTargetLineId, salesWithoutPriceSetup, showToast]);
+  }, [applyPosSalesPrice, dispatch, focusAfterProductApplied, form.lines, form.locationId, getProduct, requireCompleteProductRows, resolveTreeTargetLineId, salesWithoutPriceSetup, showToast]);
 
   const applyMultiScanItem = useCallback(async (item: MultiScanSearchItem | MultiScanResult) => {
     // In read-only mode only invoice lookup remains allowed (view another invoice).
@@ -1486,11 +1738,13 @@ export function PosPage() {
         }
 
         const target = resolveTreeTargetLineId();
+        if (!requireCompleteProductRows()) return;
         if (target.insert) {
           dispatch(insertLineAtIndex({ index: target.index, id: target.lineId }));
         }
         await applyProductToLine(target.lineId, productDetail);
         dispatch(ensureTrailingEmptyRow());
+        focusAfterProductApplied(target.lineId);
         showToast(`Product: ${productDetail.name}`);
       } catch {
         showToast('Failed to load product', '⚠');
@@ -1500,9 +1754,11 @@ export function PosPage() {
     applyProductToLine,
     applySerialScan,
     dispatch,
+    focusAfterProductApplied,
     form.locationId,
     getProduct,
     loadInvoiceByNo,
+    requireCompleteProductRows,
     resolveTreeTargetLineId,
     selectCustomer,
     showToast,
@@ -1662,18 +1918,33 @@ export function PosPage() {
                     onHoverLeave={() => setCustTip((t) => (t.visible ? { ...t, visible: false } : t))}
                   />
                 </div>
-                <div className="fr">
-                  <span className="fl">Mobile No</span>
-                  <CustomerSearchInput
-                    value={form.mobile}
-                    companyId={posSession.companyId}
-                    variant="phone"
-                    refreshKey={customerListRefresh}
-                    selectedBuyerId={form.buyerId}
-                    disabled={isInvoiceReadOnly}
-                    onCommit={onMobileCommit}
-                    onSelect={selectCustomer}
-                  />
+                <div className="fr fr-duo">
+                  <div className="fr-duo-cell">
+                    <span className="fl">Mobile No</span>
+                    <CustomerSearchInput
+                      value={form.mobile}
+                      companyId={posSession.companyId}
+                      variant="phone"
+                      refreshKey={customerListRefresh}
+                      selectedBuyerId={form.buyerId}
+                      disabled={isInvoiceReadOnly}
+                      onCommit={onMobileCommit}
+                      onSelect={selectCustomer}
+                    />
+                  </div>
+                  <div className="fr-duo-cell">
+                    <span className="fl">Code</span>
+                    <CustomerSearchInput
+                      value={form.customerCode}
+                      companyId={posSession.companyId}
+                      variant="code"
+                      refreshKey={customerListRefresh}
+                      selectedBuyerId={form.buyerId}
+                      disabled={isInvoiceReadOnly}
+                      onCommit={onCustomerCodeCommit}
+                      onSelect={selectCustomer}
+                    />
+                  </div>
                 </div>
                 <div className="fr">
                   <span className="fl">Address</span>
@@ -1723,16 +1994,18 @@ export function PosPage() {
                   <span className="fl">Ledger Due</span>
                   <input className="fv mono red" value={formatNumber(form.ledgerDue)} readOnly />
                 </div>
-                <div className="fr" style={{ gap: 5 }}>
-                  <span className="fl" style={{ flexShrink: 0 }}>Pay Mode</span>
-                  <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div className="fr fr-duo">
+                  <div className="fr-duo-cell">
+                    <span className="fl">Pay Mode</span>
+                    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
                     <select
-                      className="fv"
+                      className={`fv${paymentModeDropdownLocked ? ' fv--locked' : ''}`}
                       style={{ flex: 1, minWidth: 0 }}
                       value={form.paymentModeId > 0 ? form.paymentModeId : ''}
-                      disabled={isInvoiceReadOnly || paymentModesLoading || paymentModesError}
+                      disabled={isInvoiceReadOnly || paymentModesLoading || paymentModesError || paymentModeDropdownLocked}
                       onChange={(e) => {
-                        if (isInvoiceReadOnly) return;
+                        if (isInvoiceReadOnly || paymentModeDropdownLocked) return;
                         const id = Number(e.target.value) || 0;
                         if (!id) {
                           onPayModeClear();
@@ -1751,6 +2024,18 @@ export function PosPage() {
                         </option>
                       ))}
                     </select>
+                    {payModeHasPopup && (
+                      <button
+                        type="button"
+                        className="pay-mode-edit-btn"
+                        title="Open payment details"
+                        disabled={isInvoiceReadOnly || paymentModeDropdownLocked}
+                        onClick={reopenPayModePopup}
+                      >
+                        ✎
+                      </button>
+                    )}
+                    </div>
                     {paymentModesError && (
                       <div style={{ fontSize: 10.5, color: 'var(--red)', display: 'flex', gap: 8, alignItems: 'center' }}>
                         Failed to load payment modes.
@@ -1762,35 +2047,37 @@ export function PosPage() {
                     {!paymentModesLoading && !paymentModesError && parentPaymentModes.length === 0 && (
                       <div style={{ fontSize: 10.5, color: 'var(--text3)' }}>No payment modes configured.</div>
                     )}
+                    </div>
                   </div>
-                  <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text3)', flexShrink: 0, whiteSpace: 'nowrap' }}>Sub Pay Mode</span>
-                  <select
-                    className="fv"
-                    style={{ flex: 1, minWidth: 0 }}
-                    value={form.subPaymentModeId && form.subPaymentModeId > 0 ? form.subPaymentModeId : ''}
-                    disabled={isInvoiceReadOnly || subPaymentModes.length === 0 || paymentModesLoading || paymentModesError}
-                    onChange={(e) => {
-                      if (isInvoiceReadOnly) return;
-                      const id = Number(e.target.value) || 0;
-                      if (!id) {
-                        onSubPayModeClear();
-                        return;
-                      }
-                      const mode = subPaymentModes.find((m) => m.paymentModeId === id);
-                      if (mode) onSubPayModeSelect(mode);
-                    }}
-                  >
-                    <option value="">{subPaymentModes.length === 0 ? '— N/A —' : 'Select sub pay mode...'}</option>
-                    {subPaymentModes.map((m) => (
-                      <option key={m.paymentModeId} value={m.paymentModeId}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="fr-duo-cell">
+                    <span className="fl">Sub Pay Mode</span>
+                    <select
+                      className={`fv${paymentModeDropdownLocked ? ' fv--locked' : ''}`}
+                      value={form.subPaymentModeId && form.subPaymentModeId > 0 ? form.subPaymentModeId : ''}
+                      disabled={isInvoiceReadOnly || subPaymentModes.length === 0 || paymentModesLoading || paymentModesError || paymentModeDropdownLocked}
+                      onChange={(e) => {
+                        if (isInvoiceReadOnly || paymentModeDropdownLocked) return;
+                        const id = Number(e.target.value) || 0;
+                        if (!id) {
+                          onSubPayModeClear();
+                          return;
+                        }
+                        const mode = subPaymentModes.find((m) => m.paymentModeId === id);
+                        if (mode) onSubPayModeSelect(mode);
+                      }}
+                    >
+                      <option value="">{subPaymentModes.length === 0 ? '— N/A —' : 'Select sub pay mode...'}</option>
+                      {subPaymentModes.map((m) => (
+                        <option key={m.paymentModeId} value={m.paymentModeId}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-                <div className="fr" style={{ gap: 5 }}>
-                  <span className="fl" style={{ flexShrink: 0 }}>Ref No</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="fr fr-duo">
+                  <div className="fr-duo-cell">
+                    <span className="fl">Ref No</span>
                     <ReferenceSearchInput
                       value={selectedReference}
                       options={references}
@@ -1799,24 +2086,25 @@ export function PosPage() {
                       onClear={onReferenceClear}
                     />
                   </div>
-                  <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text3)', flexShrink: 0, whiteSpace: 'nowrap' }}>Event Type</span>
-                  <select
-                    className="fv"
-                    style={{ flex: 1, minWidth: 0 }}
-                    value={form.biznessEventTypeId > 0 ? form.biznessEventTypeId : ''}
-                    disabled={isInvoiceReadOnly}
-                    onChange={(e) => {
-                      if (isInvoiceReadOnly) return;
-                      dispatch(updateField({ key: 'biznessEventTypeId', value: Number(e.target.value) || 0 }));
-                    }}
-                  >
-                    <option value="">Select event type...</option>
-                    {biznessEventTypes.map((t) => (
-                      <option key={t.biznessEventTypeId} value={t.biznessEventTypeId}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="fr-duo-cell">
+                    <span className="fl">Event Type</span>
+                    <select
+                      className="fv"
+                      value={form.biznessEventTypeId > 0 ? form.biznessEventTypeId : ''}
+                      disabled={isInvoiceReadOnly}
+                      onChange={(e) => {
+                        if (isInvoiceReadOnly) return;
+                        dispatch(updateField({ key: 'biznessEventTypeId', value: Number(e.target.value) || 0 }));
+                      }}
+                    >
+                      <option value="">Select event type...</option>
+                      {biznessEventTypes.map((t) => (
+                        <option key={t.biznessEventTypeId} value={t.biznessEventTypeId}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1824,35 +2112,39 @@ export function PosPage() {
             <div className="card">
               <div className="ch"><span className="dot" style={{ background: 'var(--orange)' }} />Sales Information</div>
               <div className="cb">
-                <div className="fr">
-                  <span className="fl">Inv. Date</span>
-                  <input
-                    className="fv"
-                    type="datetime-local"
-                    value={form.invoiceDate}
-                    readOnly={!invoiceDateEditable || isInvoiceReadOnly}
-                    disabled={!invoiceDateEditable || isInvoiceReadOnly}
-                    onChange={(e) => {
-                      if (!invoiceDateEditable || isInvoiceReadOnly) return;
-                      dispatch(updateField({ key: 'invoiceDate', value: e.target.value }));
-                    }}
-                  />
-                  <span className="fl" style={{ marginLeft: 6 }}>Promised Date</span>
-                  <input
-                    className="fv"
-                    type="datetime-local"
-                    value={form.paymentPromiseDate}
-                    readOnly={isInvoiceReadOnly}
-                    disabled={isInvoiceReadOnly}
-                    onChange={(e) => {
-                      if (isInvoiceReadOnly) return;
-                      dispatch(updateField({ key: 'paymentPromiseDate', value: e.target.value }));
-                    }}
-                  />
+                <div className="fr fr-duo">
+                  <div className="fr-duo-cell">
+                    <span className="fl">Inv. Date</span>
+                    <input
+                      className="fv"
+                      type="datetime-local"
+                      value={form.invoiceDate}
+                      readOnly={!invoiceDateEditable || isInvoiceReadOnly}
+                      disabled={!invoiceDateEditable || isInvoiceReadOnly}
+                      onChange={(e) => {
+                        if (!invoiceDateEditable || isInvoiceReadOnly) return;
+                        dispatch(updateField({ key: 'invoiceDate', value: e.target.value }));
+                      }}
+                    />
+                  </div>
+                  <div className="fr-duo-cell">
+                    <span className="fl">Promised Date</span>
+                    <input
+                      className="fv"
+                      type="datetime-local"
+                      value={form.paymentPromiseDate}
+                      readOnly={isInvoiceReadOnly}
+                      disabled={isInvoiceReadOnly}
+                      onChange={(e) => {
+                        if (isInvoiceReadOnly) return;
+                        dispatch(updateField({ key: 'paymentPromiseDate', value: e.target.value }));
+                      }}
+                    />
+                  </div>
                 </div>
-                <div className="fr" style={{ position: 'relative', gap: 5 }}>
-                  <span className="fl" style={{ flexShrink: 0 }}>Sales Person</span>
-                  <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+                <div className="fr fr-duo">
+                  <div className="fr-duo-cell">
+                    <span className="fl">Sales Person</span>
                     <SalesPersonSearchInput
                       value={selectedSalesPerson}
                       options={salesPersons}
@@ -1861,24 +2153,25 @@ export function PosPage() {
                       onClear={onSalesPersonClear}
                     />
                   </div>
-                  <span className="fl" style={{ flexShrink: 0, marginLeft: 4 }}>Delivery Address</span>
-                  <input
-                    className="fv"
-                    style={{ flex: 1.2, minWidth: 0 }}
-                    value={form.deliveryAddress}
-                    maxLength={500}
-                    readOnly={isInvoiceReadOnly}
-                    disabled={isInvoiceReadOnly}
-                    placeholder="Delivery address..."
-                    onChange={(e) => {
-                      if (isInvoiceReadOnly) return;
-                      dispatch(updateField({ key: 'deliveryAddress', value: e.target.value }));
-                    }}
-                  />
+                  <div className="fr-duo-cell">
+                    <span className="fl">Delivery Address</span>
+                    <input
+                      className="fv"
+                      value={form.deliveryAddress}
+                      maxLength={500}
+                      readOnly={isInvoiceReadOnly}
+                      disabled={isInvoiceReadOnly}
+                      placeholder="Delivery address..."
+                      onChange={(e) => {
+                        if (isInvoiceReadOnly) return;
+                        dispatch(updateField({ key: 'deliveryAddress', value: e.target.value }));
+                      }}
+                    />
+                  </div>
                 </div>
-                <div className="fr" style={{ gap: 5 }}>
-                  <span className="fl" style={{ flexShrink: 0 }}>Inv. Discount</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="fr fr-duo">
+                  <div className="fr-duo-cell">
+                    <span className="fl">Inv. Discount</span>
                     <DiscountInput
                       value={form.invoiceDiscount}
                       type={form.invoiceDiscountType}
@@ -1894,44 +2187,49 @@ export function PosPage() {
                       }
                     />
                   </div>
-                  <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text3)', flexShrink: 0, whiteSpace: 'nowrap' }}>Project</span>
-                  <select
-                    className="fv"
-                    style={{ flex: 1, minWidth: 0 }}
-                    value={form.projectId > 0 ? form.projectId : ''}
-                    disabled={isInvoiceReadOnly}
-                    onChange={(e) => {
-                      if (isInvoiceReadOnly) return;
-                      dispatch(updateField({ key: 'projectId', value: Number(e.target.value) || 0 }));
-                    }}
-                  >
-                    <option value="">Select project...</option>
-                    {projects.map((p) => (
-                      <option key={p.projectId} value={p.projectId}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="fr-duo-cell">
+                    <span className="fl">Project</span>
+                    <select
+                      className="fv"
+                      value={form.projectId > 0 ? form.projectId : ''}
+                      disabled={isInvoiceReadOnly}
+                      onChange={(e) => {
+                        if (isInvoiceReadOnly) return;
+                        dispatch(updateField({ key: 'projectId', value: Number(e.target.value) || 0 }));
+                      }}
+                    >
+                      <option value="">Select project...</option>
+                      {projects.map((p) => (
+                        <option key={p.projectId} value={p.projectId}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-                <div className="fr" style={{ gap: 5 }}>
-                  <span className="fl">VAT / AIT</span>
-                  <SoftZeroNumberInput
-                    value={form.vatAit}
-                    disabled={isInvoiceReadOnly}
-                    onCommit={(value) => {
-                      if (isInvoiceReadOnly) return;
-                      dispatch(updateField({ key: 'vatAit', value }));
-                    }}
-                  />
-                  <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text3)', whiteSpace: 'nowrap' }}>Others Charge</span>
-                  <SoftZeroNumberInput
-                    value={form.othersCharge}
-                    disabled={isInvoiceReadOnly}
-                    onCommit={(value) => {
-                      if (isInvoiceReadOnly) return;
-                      dispatch(updateField({ key: 'othersCharge', value }));
-                    }}
-                  />
+                <div className="fr fr-duo">
+                  <div className="fr-duo-cell">
+                    <span className="fl">VAT / AIT</span>
+                    <SoftZeroNumberInput
+                      value={form.vatAit}
+                      disabled={isInvoiceReadOnly}
+                      onCommit={(value) => {
+                        if (isInvoiceReadOnly) return;
+                        dispatch(updateField({ key: 'vatAit', value }));
+                      }}
+                    />
+                  </div>
+                  <div className="fr-duo-cell">
+                    <span className="fl">Others Charge</span>
+                    <SoftZeroNumberInput
+                      value={form.othersCharge}
+                      disabled={isInvoiceReadOnly}
+                      onCommit={(value) => {
+                        if (isInvoiceReadOnly) return;
+                        dispatch(updateField({ key: 'othersCharge', value }));
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1943,6 +2241,7 @@ export function PosPage() {
             locationId={form.locationId}
             companyId={posSession.companyId}
             readOnly={isInvoiceReadOnly}
+            allowDuplicateProducts={posMultiplePriceSales}
             onLineChange={onLineChange}
             onMarkDeleted={onMarkDeleted}
             onEnsureTrailingRow={onEnsureTrailingRow}
@@ -1957,6 +2256,7 @@ export function PosPage() {
             onOpenSerial={setSerialLineId}
             onClear={onClearAll}
             onFocusSave={focusSaveButton}
+            onIncompleteRequired={(hit) => showToast(incompleteQtyPriceMessage(hit), '⚠')}
           />
 
           <div className="bot">
@@ -2001,7 +2301,7 @@ export function PosPage() {
       <StatusBar connected={health?.status === 'Connected'} invoiceNo={form.invoiceNo} customerName={form.customerName} />
 
       <CustomerStatsTip visible={custTip.visible} stats={customerStats} x={custTip.x} y={custTip.y} />
-      <PriceHistoryTip visible={!!hoverLineId} product={hoverProduct} history={hoverHistory} x={tipPos.x} y={tipPos.y} />
+      <PriceHistoryTip visible={!!hoverLineId} product={hoverProduct} history={hoverHistory} x={tipPos.x} y={tipPos.y} showCost={canViewProductCost} buyerId={form.buyerId} />
 
       <CustomerSetupModal
         open={customerModalOpen}
@@ -2019,6 +2319,7 @@ export function PosPage() {
             buyerId: customer.buyerId,
             buyerName: customer.name,
             name: customer.name,
+            code: customer.code ?? '',
             phone: customer.phone ?? '',
             address: customer.address,
             employeeId: customer.employeeId,
@@ -2159,6 +2460,15 @@ export function PosPage() {
           }
         }}
       />
+
+      {posFeaturesLoading && (
+        <div className="pos-block-loader" role="status" aria-live="polite" aria-label="Loading POS settings">
+          <div className="pos-block-loader__card">
+            <div className="pos-block-loader__spinner" aria-hidden="true" />
+            <p className="pos-block-loader__text">Loading POS settings…</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

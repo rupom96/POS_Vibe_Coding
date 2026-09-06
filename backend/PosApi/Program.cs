@@ -36,6 +36,9 @@ builder.Services.AddScoped<ILookupService, LookupService>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
 builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IPosService, PosService>();
+builder.Services.AddScoped<IInvoiceNotificationService, InvoiceNotificationService>();
+builder.Services.AddHttpClient(nameof(InvoiceNotificationService))
+    .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddSingleton<IAppActivityLogger, AppActivityLogger>();
 builder.Services.AddSingleton<SqlUserFriendlyError>();
 builder.Services.AddScoped<ActivityLogActionFilter>();
@@ -103,12 +106,24 @@ app.UseSwaggerUI(options =>
     options.RoutePrefix = "swagger";
 });
 
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.UseCors("Frontend");
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapGet("/", () => Results.Redirect("/swagger"));
 app.MapControllers();
 app.MapAuthEndpoints();
 app.MapHub<ScanRelayHub>("/hubs/scan-relay");
+
+var spaIndex = Path.Combine(app.Environment.WebRootPath ?? string.Empty, "index.html");
+if (File.Exists(spaIndex))
+{
+    app.MapFallbackToFile("index.html");
+}
+else
+{
+    app.MapGet("/", () => Results.Redirect("/swagger"));
+}
 
 app.Run();

@@ -6,6 +6,7 @@ dist/
 backend/**/bin/
 backend/**/obj/
 PUBLISHES/
+PUBLISH/
 
 # Environment / secrets (use *.Example.json templates)
 .env
@@ -20,6 +21,10 @@ PUBLISHES/
 # OS
 Thumbs.db
 .DS_Store
+
+# Built SPA copied into the API for single-port hosting
+/backend/PosApi/wwwroot/**
+!/backend/PosApi/wwwroot/.gitkeep
 
 # Local archives / large binaries
 *.rar

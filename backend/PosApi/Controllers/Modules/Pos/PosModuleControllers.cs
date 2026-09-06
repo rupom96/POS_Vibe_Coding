@@ -102,6 +102,10 @@ public class CustomersController(ICustomerService customerService) : ControllerB
     public async Task<ActionResult<decimal>> GetLedgerDue(long buyerId, [FromQuery] long? userId = null)
         => Ok(await customerService.GetLedgerDueAsync(buyerId, userId));
 
+    [HttpGet("{buyerId:long}/preferred-payment-mode")]
+    public async Task<ActionResult<BuyerPreferredPaymentModeDto>> GetPreferredPaymentMode(long buyerId)
+        => Ok(await customerService.GetPreferredPaymentModeAsync(buyerId));
+
     [HttpPost]
     public async Task<ActionResult<CustomerDto>> Create([FromBody] CreateCustomerRequest request)
     {
@@ -133,7 +137,7 @@ public class CustomersController(ICustomerService customerService) : ControllerB
 
 [ApiController]
 [Route("api/products")]
-public class ProductsController(IProductService productService) : ControllerBase
+public class ProductsController(IProductService productService, ILookupService lookupService) : ControllerBase
 {
     [HttpGet("search")]
     public async Task<ActionResult<IReadOnlyList<ProductSearchResultDto>>> Search(
@@ -150,7 +154,9 @@ public class ProductsController(IProductService productService) : ControllerBase
         [FromQuery] long? companyId)
     {
         var product = await productService.GetByIdAsync(productId, locationId, companyId);
-        return product is null ? NotFound() : Ok(product);
+        if (product is null) return NotFound();
+        await HideProductCostIfUnauthorized(product);
+        return Ok(product);
     }
 
     [HttpGet("{productId:long}/price-history")]
@@ -225,6 +231,17 @@ public class ProductsController(IProductService productService) : ControllerBase
             return BadRequest(new { message = ex.Message });
         }
     }
+
+    private async Task HideProductCostIfUnauthorized(ProductDetailDto product)
+    {
+        var userId = ClientSessionInfo.From(Request).SecurityUserId ?? 0;
+        if (await lookupService.CanViewProductCostAsync(userId))
+            return;
+
+        product.CostMin = null;
+        product.CostMax = null;
+        product.CostAvg = null;
+    }
 }
 
 [ApiController]
@@ -298,7 +315,8 @@ public class PosController(IPosService posService, SqlUserFriendlyError friendly
     {
         try
         {
-            var response = await posService.SaveInvoiceAsync(request);
+            var scopedRequest = SaveInvoiceRequestScope.ApplyClientSession(Request, request);
+            var response = await posService.SaveInvoiceAsync(scopedRequest);
             return Ok(response);
         }
         catch (InvalidOperationException ex)

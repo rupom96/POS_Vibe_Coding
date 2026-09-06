@@ -68,8 +68,10 @@ describe('VAL-01 invoiceDiscountCap', () => {
 });
 
 describe('VAL-02 / VAL-03 / PAY-* validateInvoiceForSave', () => {
-  it('requiredFields: reports missing customer, employee, modes, project, lines', () => {
+  it('requiredFields: reports missing company, location, customer, employee, modes, project, lines', () => {
     const errors = validateInvoiceForSave({
+      companyId: 0,
+      locationId: 0,
       customerName: '',
       employeeId: undefined,
       paymentModeId: 0,
@@ -80,6 +82,8 @@ describe('VAL-02 / VAL-03 / PAY-* validateInvoiceForSave', () => {
       lines: [emptyLine(0)],
       paymentModes: [cash],
     });
+    expect(errors.some((e) => e.includes('Company'))).toBe(true);
+    expect(errors.some((e) => e.includes('Location'))).toBe(true);
     expect(errors.some((e) => e.includes('customer'))).toBe(true);
     expect(errors.some((e) => e.includes('Sales person'))).toBe(true);
     expect(errors.some((e) => e.includes('Payment mode'))).toBe(true);
@@ -90,6 +94,8 @@ describe('VAL-02 / VAL-03 / PAY-* validateInvoiceForSave', () => {
 
   it('lineQtyPrice: requires qty and unit price', () => {
     const errors = validateInvoiceForSave({
+      companyId: 1,
+      locationId: 1,
       buyerId: 1,
       customerName: 'A',
       employeeId: 1,
@@ -108,6 +114,8 @@ describe('VAL-02 / VAL-03 / PAY-* validateInvoiceForSave', () => {
   it('mixedRequiresConfirm', () => {
     expect(isMixedPaymentMode(mixed)).toBe(true);
     const errors = validateInvoiceForSave({
+      companyId: 1,
+      locationId: 1,
       buyerId: 1,
       customerName: 'A',
       employeeId: 1,
@@ -125,6 +133,8 @@ describe('VAL-02 / VAL-03 / PAY-* validateInvoiceForSave', () => {
 
   it('mixedModeCrossCheck equal / less / more', () => {
     const base = {
+      companyId: 1,
+      locationId: 1,
       buyerId: 1,
       customerName: 'A',
       employeeId: 1,
@@ -152,6 +162,8 @@ describe('VAL-02 / VAL-03 / PAY-* validateInvoiceForSave', () => {
   it('cardRequiresConfirm', () => {
     expect(isCardPaymentActive(card.paymentModeId, undefined, [card])).toBe(true);
     const errors = validateInvoiceForSave({
+      companyId: 1,
+      locationId: 1,
       buyerId: 1,
       customerName: 'A',
       employeeId: 1,

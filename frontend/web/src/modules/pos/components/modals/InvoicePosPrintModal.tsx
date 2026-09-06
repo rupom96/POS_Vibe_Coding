@@ -78,6 +78,7 @@ export function InvoicePosPrintModal({
     const ok = printHtmlElement(
       sheetRef.current,
       `Invoice ${form.invoiceNo.trim() || 'POS'}`,
+      { paper: 'A5' },
     );
     if (!ok) window.print();
   }, [form.invoiceNo]);

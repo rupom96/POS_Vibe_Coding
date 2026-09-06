@@ -1,10 +1,10 @@
-﻿{
-  "companyId": 1,
-  "companyName": "City Computer And IT TEST",
-  "locationId": 32,
-  "locationName": "Show Room",
-  "securityUserId": 20238,
-  "securityUserName": "Milon",
-  "employeeId": 280,
-  "employeeName": "Milon Islam"
+{
+  "companyId": 3,
+  "companyName": "Sami Telecom-CM",
+  "locationId": 33,
+  "locationName": "Head office",
+  "securityUserId": 20240,
+  "securityUserName": "DATABIZ",
+  "employeeId": 281,
+  "employeeName": "DATABIZ"
 }

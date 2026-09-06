@@ -9,6 +9,7 @@ import { appendScopeParams, type PosScope } from '../../../config/posSession';
 import { getApiBaseUrl } from '../../../config/runtimeConfig';
 import { sessionLogHeaders } from '../../../shared/utils/clientActivityLog';
 import type {
+  BuyerPreferredPaymentMode,
   Customer,
   CustomerSearchResult,
   CustomerStats,
@@ -204,6 +205,9 @@ export const posApi = createApi({
         return `/customers/${buyerId}/ledger-due${qs ? `?${qs}` : ''}`;
       },
     }),
+    getCustomerPreferredPaymentMode: builder.query<BuyerPreferredPaymentMode, number>({
+      query: (buyerId) => `/customers/${buyerId}/preferred-payment-mode`,
+    }),
     createCustomer: builder.mutation<Customer, CreateCustomerRequest>({
       query: (body) => ({ url: '/customers', method: 'POST', body }),
       invalidatesTags: ['Customers'],
@@ -236,6 +240,7 @@ export const posApi = createApi({
         const params = buyerId ? `?buyerId=${buyerId}` : '';
         return `/products/${productId}/price-history${params}`;
       },
+      keepUnusedDataFor: 0,
     }),
     getProductPrice: builder.query<
       ProductPriceQuote | null,
@@ -408,6 +413,7 @@ export const {
   useGetCustomerStatsQuery,
   useLazyGetCustomerStatsQuery,
   useLazyGetCustomerLedgerDueQuery,
+  useLazyGetCustomerPreferredPaymentModeQuery,
   useCreateCustomerMutation,
   useSearchProductsQuery,
   useLazySearchProductsQuery,
