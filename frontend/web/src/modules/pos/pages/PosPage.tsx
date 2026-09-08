@@ -12,7 +12,12 @@ import { CustomerStatsTip } from '../components/CustomerStatsTip';
 import { PriceHistoryTip } from '../components/PriceHistoryTip';
 import { useToast } from '../../../shared/components/Toast';
 import { getLoginSession, posSession } from '../../../config/posSession';
-import { openBr2InvoiceReportWithSalesOrder, openBr2IndividualDeliveryChallan } from '../utils/openBr2InvoiceReport';
+import {
+  openBr2InvoiceReportWithSalesOrder,
+  openBr2InvoiceReportWithSalesOrderPOS,
+  openBr2IndividualDeliveryChallan,
+} from '../utils/openBr2InvoiceReport';
+import { InvoicePosPrintModal } from '../components/modals/InvoicePosPrintModal';
 import { PosItemsTable, type PosItemsTableHandle } from '../components/grid/PosItemsTable';
 import { SerialModal } from '../components/modals/SerialModal';
 import { StatusBar } from '../components/layout/StatusBar';
@@ -23,7 +28,6 @@ import { ScanModal } from '../components/modals/ScanModal';
 import { ExchangeModal } from '../components/modals/ExchangeModal';
 import { MoreActionsModal } from '../components/modals/MoreActionsModal';
 import { InvoiceReportModal } from '../components/modals/InvoiceReportModal';
-import { InvoicePosPrintModal } from '../components/modals/InvoicePosPrintModal';
 import { DeliveryChallanModal } from '../components/modals/DeliveryChallanModal';
 import { HoldInvoiceModal } from '../components/modals/HoldInvoiceModal';
 import { TodayInvoiceListModal } from '../components/modals/TodayInvoiceListModal';
@@ -1849,11 +1853,16 @@ export function PosPage() {
       return;
     }
     if (kind === 'pos') {
-      // Open print window in the same user-click (avoids Chrome popup blocker on auto-print).
-      // Use a ref (not state) so the modal sees the window immediately.
-      invoicePosPrintWinRef.current = window.open('', '_blank', 'width=620,height=880');
-      setInvoicePosAutoPrint(true);
-      setInvoicePosModalOpen(true);
+      // BR2 ShowReportPOSNew → InvoiceReportWithSalesOrderPOS (PDF).
+      // Vibe opens a same-origin print shell that embeds the PDF and calls window.print()
+      // (cross-origin iframe.print() is blocked when Vibe is on 8081 / BR2 on 8080).
+      const br2 = openBr2InvoiceReportWithSalesOrderPOS(invoiceNo);
+      if (!br2.ok) {
+        invoicePosPrintWinRef.current = window.open('', '_blank', 'width=620,height=880');
+        setInvoicePosAutoPrint(true);
+        setInvoicePosModalOpen(true);
+        showToast(br2.error ?? 'BR2 report popup blocked — printing Vibe invoice instead', '⚠');
+      }
       return;
     }
     // Report → BR2 Crystal InvoiceSummary_SMART.rpt (InvoiceReportWithSalesOrder)
@@ -1862,6 +1871,11 @@ export function PosPage() {
   }, [form.invoiceNo, form.salesOrderId, showToast]);
 
   const openDeliveryChallanReport = useCallback(() => {
+    // Temporarily disabled — keep BR2 wiring below so restore is one-step.
+    showToast('Not implemented', 'ℹ');
+    return;
+
+    // --- restore Challan: uncomment return above and keep this body ---
     const invoiceNo = form.invoiceNo.trim();
     if (!invoiceNo || !form.salesOrderId) {
       showToast('Load a saved invoice first, then open challan', '⚠');
