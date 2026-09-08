@@ -2307,6 +2307,7 @@ export function PosPage() {
         open={customerModalOpen}
         onClose={() => setCustomerModalOpen(false)}
         saving={creatingCustomer}
+        companyId={posSession.companyId}
         onSave={async (data) => {
           const customer = await createCustomer({
             ...data,

@@ -63,6 +63,10 @@ public class LookupsController(ILookupService lookupService) : ControllerBase
     public async Task<ActionResult<IReadOnlyList<ProjectOptionDto>>> GetProjects([FromQuery] long companyId)
         => Ok(await lookupService.GetProjectsAsync(companyId));
 
+    [HttpGet("buyer-groups")]
+    public async Task<ActionResult<IReadOnlyList<BuyerGroupOptionDto>>> GetBuyerGroups([FromQuery] long companyId)
+        => Ok(await lookupService.GetBuyerGroupsAsync(companyId));
+
     [HttpGet("company")]
     public async Task<ActionResult<CompanyLetterheadDto>> GetCompany([FromQuery] long companyId)
     {

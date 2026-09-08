@@ -107,6 +107,12 @@ export interface ProjectOption {
   name: string;
 }
 
+export interface BuyerGroupOption {
+  buyerGroupId: number;
+  name: string;
+  code?: string;
+}
+
 export interface SalesPerson {
   employeeId: number;
   name: string;

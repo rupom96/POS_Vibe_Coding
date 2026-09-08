@@ -17,6 +17,7 @@ public interface ILookupService
     Task<IReadOnlyList<CardEmiDeductionDto>> GetCardEmiDeductionsAsync(long bankId);
     Task<IReadOnlyList<BiznessEventTypeOptionDto>> GetPosBiznessEventTypesAsync(long companyId, long locationId);
     Task<IReadOnlyList<ProjectOptionDto>> GetProjectsAsync(long companyId);
+    Task<IReadOnlyList<BuyerGroupOptionDto>> GetBuyerGroupsAsync(long companyId);
     Task<CompanyLetterheadDto?> GetCompanyLetterheadAsync(long companyId);
 }
 
@@ -347,6 +348,25 @@ public class LookupService(IDbConnectionFactory db) : ILookupService
 
         using var conn = db.CreateConnection();
         var rows = await conn.QueryAsync<ProjectOptionDto>(sql, new { CompanyId = companyId });
+        return rows.ToList();
+    }
+
+    public async Task<IReadOnlyList<BuyerGroupOptionDto>> GetBuyerGroupsAsync(long companyId)
+    {
+        if (companyId <= 0)
+            return [];
+
+        const string sql = """
+            SELECT BuyerGroupId, Name, Code
+            FROM BuyerGroup
+            WHERE CompanyId = @CompanyId
+              AND Name IS NOT NULL
+              AND LTRIM(RTRIM(Name)) <> ''
+            ORDER BY Name
+            """;
+
+        using var conn = db.CreateConnection();
+        var rows = await conn.QueryAsync<BuyerGroupOptionDto>(sql, new { CompanyId = companyId });
         return rows.ToList();
     }
 

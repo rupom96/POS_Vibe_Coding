@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { CreateCustomerRequest } from '../../store/posSlice';
+import { useGetBuyerGroupsQuery } from '../../api/posApi';
 import { getApiErrorMessage } from '../../../../shared/utils/apiError';
 
 const EMPTY_FORM: CreateCustomerRequest = {
@@ -8,6 +9,7 @@ const EMPTY_FORM: CreateCustomerRequest = {
   phone: '',
   address: '',
   remarks: '',
+  groupId: undefined,
 };
 
 type FieldErrors = {
@@ -43,18 +45,31 @@ export function CustomerSetupModal({
   onClose,
   onSave,
   saving,
+  companyId,
 }: {
   open: boolean;
   onClose: () => void;
   onSave: (data: CreateCustomerRequest) => Promise<void> | void;
   saving: boolean;
+  companyId: number;
 }) {
   const [form, setForm] = useState<CreateCustomerRequest>(EMPTY_FORM);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
 
+  const { data: buyerGroups = [], isLoading: buyerGroupsLoading } = useGetBuyerGroupsQuery(
+    { companyId },
+    { skip: !open || companyId <= 0 },
+  );
+
+  const retailGroupId = useMemo(() => {
+    const retail = buyerGroups.find((g) => g.name.trim().toLowerCase() === 'retail');
+    return retail?.buyerGroupId;
+  }, [buyerGroups]);
+
   const nameRef = useRef<HTMLInputElement>(null);
   const phoneRef = useRef<HTMLInputElement>(null);
+  const groupRef = useRef<HTMLSelectElement>(null);
   const addressRef = useRef<HTMLInputElement>(null);
   const remarksRef = useRef<HTMLTextAreaElement>(null);
   const saveBtnRef = useRef<HTMLButtonElement>(null);
@@ -72,6 +87,15 @@ export function CustomerSetupModal({
     return () => window.clearTimeout(id);
   }, [open]);
 
+  // Default Buyer Group to "Retail" when groups load / modal opens.
+  useEffect(() => {
+    if (!open || retailGroupId == null) return;
+    setForm((prev) => {
+      if (prev.groupId != null && prev.groupId > 0) return prev;
+      return { ...prev, groupId: retailGroupId };
+    });
+  }, [open, retailGroupId]);
+
   if (!open) return null;
 
   const busy = saving || submitting;
@@ -86,6 +110,11 @@ export function CustomerSetupModal({
     }
     if (busy) return;
 
+    const resolvedGroupId =
+      form.groupId && form.groupId > 0
+        ? form.groupId
+        : retailGroupId;
+
     setSubmitting(true);
     try {
       await onSave({
@@ -95,6 +124,7 @@ export function CustomerSetupModal({
         phone: form.phone.trim(),
         address: form.address?.trim() ?? '',
         remarks: form.remarks?.trim() ?? '',
+        groupId: resolvedGroupId,
       });
     } catch (err) {
       setErrors((prev) => ({
@@ -176,10 +206,33 @@ export function CustomerSetupModal({
                   setForm({ ...form, phone: digits });
                   if (errors.phone) setErrors((prev) => ({ ...prev, phone: undefined, form: undefined }));
                 }}
-                onKeyDown={(e) => focusNextOnEnter(e, () => addressRef.current?.focus())}
+                onKeyDown={(e) => focusNextOnEnter(e, () => groupRef.current?.focus())}
               />
               {errors.phone && <div className="cs-field-error">{errors.phone}</div>}
             </div>
+
+            <span className="cs-label">Buyer Group</span>
+            <select
+              ref={groupRef}
+              className="mfi"
+              value={form.groupId && form.groupId > 0 ? form.groupId : ''}
+              disabled={busy || buyerGroupsLoading || buyerGroups.length === 0}
+              onChange={(e) => {
+                const id = Number(e.target.value) || undefined;
+                setForm({ ...form, groupId: id });
+              }}
+              onKeyDown={(e) => focusNextOnEnter(e, () => addressRef.current?.focus())}
+            >
+              {buyerGroupsLoading && <option value="">Loading groups...</option>}
+              {!buyerGroupsLoading && buyerGroups.length === 0 && (
+                <option value="">No buyer groups</option>
+              )}
+              {!buyerGroupsLoading && buyerGroups.map((g) => (
+                <option key={g.buyerGroupId} value={g.buyerGroupId}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
 
             <span className="cs-label">Address</span>
             <input

@@ -74,6 +74,13 @@ public class ProjectOptionDto
     public string Name { get; set; } = string.Empty;
 }
 
+public class BuyerGroupOptionDto
+{
+    public long BuyerGroupId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Code { get; set; }
+}
+
 public class CompanyLetterheadDto
 {
     public long CompanyId { get; set; }

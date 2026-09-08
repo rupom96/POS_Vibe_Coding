@@ -37,6 +37,7 @@ import type {
   PosFeatureFlags,
   BiznessEventTypeOption,
   ProjectOption,
+  BuyerGroupOption,
   SaveInvoiceRequest,
   SaveInvoiceResponse,
   InvoicePrintContext,
@@ -176,6 +177,9 @@ export const posApi = createApi({
     }),
     getProjects: builder.query<ProjectOption[], { companyId: number }>({
       query: ({ companyId }) => `/lookups/projects?companyId=${companyId}`,
+    }),
+    getBuyerGroups: builder.query<BuyerGroupOption[], { companyId: number }>({
+      query: ({ companyId }) => `/lookups/buyer-groups?companyId=${companyId}`,
     }),
     searchCustomers: builder.query<
       CustomerSearchResult[],
@@ -406,6 +410,7 @@ export const {
   useGetPosFeaturesQuery,
   useGetBiznessEventTypesQuery,
   useGetProjectsQuery,
+  useGetBuyerGroupsQuery,
   useSearchCustomersQuery,
   useLazySearchCustomersQuery,
   useGetCustomerQuery,
