@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, type RefObject } from 'react';
 import { useAppSelector } from '../../../../app/hooks';
 import { posSession } from '../../../../config/posSession';
 import { useLazyGetInvoicePrintContextQuery } from '../../api/posApi';
@@ -47,13 +47,20 @@ export function InvoicePosPrintModal({
   open,
   onClose,
   salesPersonName,
+  autoPrint = false,
+  printTargetWindowRef,
 }: {
   open: boolean;
   onClose: () => void;
   salesPersonName: string;
+  /** When true, open browser print after letterhead context loads. */
+  autoPrint?: boolean;
+  /** Window opened synchronously on button click (avoids popup blocker). */
+  printTargetWindowRef?: RefObject<Window | null>;
 }) {
   const form = useAppSelector((s) => s.pos);
   const sheetRef = useRef<HTMLDivElement>(null);
+  const autoPrintedRef = useRef(false);
   const { totalAmt, grandTotal, discountAmount } = useInvoiceTotals(
     form.lines,
     form.invoiceDiscount,
@@ -65,7 +72,11 @@ export function InvoicePosPrintModal({
   const [fetchContext, { data: ctx, isFetching, isError }] = useLazyGetInvoicePrintContextQuery();
 
   useEffect(() => {
-    if (!open || !form.invoiceNo.trim()) return;
+    if (!open) {
+      autoPrintedRef.current = false;
+      return;
+    }
+    if (!form.invoiceNo.trim()) return;
     void fetchContext({
       invoiceNo: form.invoiceNo.trim(),
       companyId: posSession.companyId,
@@ -75,13 +86,33 @@ export function InvoicePosPrintModal({
   }, [open, form.invoiceNo, form.locationId, fetchContext]);
 
   const handlePrint = useCallback(() => {
+    const target = printTargetWindowRef?.current ?? null;
     const ok = printHtmlElement(
       sheetRef.current,
       `Invoice ${form.invoiceNo.trim() || 'POS'}`,
-      { paper: 'A5' },
+      { paper: 'A5', targetWindow: target },
     );
-    if (!ok) window.print();
-  }, [form.invoiceNo]);
+    if (printTargetWindowRef) {
+      printTargetWindowRef.current = null;
+    }
+    if (!ok) {
+      if (target && !target.closed) {
+        try { target.close(); } catch { /* ignore */ }
+      }
+      window.print();
+    }
+  }, [form.invoiceNo, printTargetWindowRef]);
+
+  useEffect(() => {
+    if (!open || !autoPrint || autoPrintedRef.current || isFetching) return;
+    // Wait for sheet DOM + letterhead paint, then print into the pre-opened window.
+    const t = window.setTimeout(() => {
+      if (!sheetRef.current) return;
+      autoPrintedRef.current = true;
+      handlePrint();
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [open, autoPrint, isFetching, handlePrint, ctx]);
 
   if (!open) return null;
 
