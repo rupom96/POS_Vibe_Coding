@@ -1,8 +1,5 @@
 {
-
   "baseUrl": "http://localhost:5080/api",
-
-  "appBaseUrl": "http://localhost:5173"
-
+  "appBaseUrl": "http://localhost:8088",
+  "br2ReportBaseUrl": "http://localhost:8080/BRReports"
 }
-

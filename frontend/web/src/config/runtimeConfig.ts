@@ -12,6 +12,8 @@ export interface LoginSession {
 export interface ApiSettings {
   baseUrl: string;
   appBaseUrl?: string;
+  /** BR2 BRReports folder URL, e.g. https://host/BRReports — empty = use local HTML report */
+  br2ReportBaseUrl?: string;
 }
 
 interface Br2SessionResponse {
@@ -233,6 +235,19 @@ export function getAppBaseUrl(): string {
   } catch {
     return origin;
   }
+}
+
+/**
+ * BR2 Crystal ReportViewer base (…/BRReports). Empty/unset = not configured.
+ * Safe for production: leave blank until BR2 URL is known.
+ */
+export function getBr2ReportBaseUrl(): string | null {
+  if (!loaded) {
+    throw new Error('Runtime config is not loaded yet.');
+  }
+  const configured = apiSettings.br2ReportBaseUrl?.trim();
+  if (!configured) return null;
+  return configured.replace(/\/+$/, '');
 }
 
 export async function loadRuntimeConfig(): Promise<void> {

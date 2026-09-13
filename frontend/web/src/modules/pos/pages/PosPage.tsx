@@ -12,6 +12,13 @@ import { CustomerStatsTip } from '../components/CustomerStatsTip';
 import { PriceHistoryTip } from '../components/PriceHistoryTip';
 import { useToast } from '../../../shared/components/Toast';
 import { getLoginSession, posSession } from '../../../config/posSession';
+import {
+  openBr2InvoiceReportWithSalesOrder,
+  openBr2InvoiceReportWithSalesOrderPOS,
+  openBr2CashMemoReport,
+  openBr2IndividualDeliveryChallan,
+} from '../utils/openBr2InvoiceReport';
+import { InvoicePosPrintModal } from '../components/modals/InvoicePosPrintModal';
 import { PosItemsTable, type PosItemsTableHandle } from '../components/grid/PosItemsTable';
 import { SerialModal } from '../components/modals/SerialModal';
 import { StatusBar } from '../components/layout/StatusBar';
@@ -22,7 +29,6 @@ import { ScanModal } from '../components/modals/ScanModal';
 import { ExchangeModal } from '../components/modals/ExchangeModal';
 import { MoreActionsModal } from '../components/modals/MoreActionsModal';
 import { InvoiceReportModal } from '../components/modals/InvoiceReportModal';
-import { InvoicePosPrintModal } from '../components/modals/InvoicePosPrintModal';
 import { DeliveryChallanModal } from '../components/modals/DeliveryChallanModal';
 import { HoldInvoiceModal } from '../components/modals/HoldInvoiceModal';
 import { TodayInvoiceListModal } from '../components/modals/TodayInvoiceListModal';
@@ -50,6 +56,7 @@ import {
   useLazyMultiScanQuery,
   useLazySearchMultiScanQuery,
   useLazyGetInvoiceQuery,
+  useLazyGetInvoicePrintContextQuery,
   useLazySearchInvoicesQuery,
   useSaveInvoiceMutation,
 } from '../api/posApi';
@@ -286,6 +293,7 @@ export function PosPage() {
   const [saveInvoice, { isLoading: saving }] = useSaveInvoiceMutation();
   const [searchInvoices, { data: invoiceOptions = [] }] = useLazySearchInvoicesQuery();
   const [getInvoice] = useLazyGetInvoiceQuery();
+  const [getInvoicePrintContext] = useLazyGetInvoicePrintContextQuery();
   const [createCustomer, { isLoading: creatingCustomer }] = useCreateCustomerMutation();
 
   const [scanModalOpen, setScanModalOpen] = useState(false);
@@ -304,6 +312,8 @@ export function PosPage() {
   const [moreModalOpen, setMoreModalOpen] = useState(false);
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [invoicePosModalOpen, setInvoicePosModalOpen] = useState(false);
+  const [invoicePosAutoPrint, setInvoicePosAutoPrint] = useState(false);
+  const invoicePosPrintWinRef = useRef<Window | null>(null);
   const [challanModalOpen, setChallanModalOpen] = useState(false);
   const [holdModalOpen, setHoldModalOpen] = useState(false);
   const [heldInvoices, setHeldInvoices] = useState<HeldInvoiceRecord[]>([]);
@@ -1839,14 +1849,119 @@ export function PosPage() {
   const lines = form.lines;
   const serialLine = lines.find((l) => l.id === serialLineId);
 
-  const openInvoicePrint = useCallback((kind: 'pos' | 'report') => {
+  const openInvoicePrint = useCallback(async (kind: 'pos' | 'report') => {
     const invoiceNo = form.invoiceNo.trim();
     if (!invoiceNo || !form.salesOrderId) {
       showToast('Load a saved invoice first, then print', '⚠');
       return;
     }
-    if (kind === 'pos') setInvoicePosModalOpen(true);
-    else setReportModalOpen(true);
+
+    // Same as BR2 Reports()/ShowReportPOSNew → GetInvoiceReport() → SP_PosSalesLedgerDue
+    // Must run before ReportViewer so InvoiceSummary_SMART*.rpt dues fields populate.
+    const prepLedgerDue = async () => {
+      try {
+        await getInvoicePrintContext({
+          invoiceNo,
+          companyId: posSession.companyId,
+          locationId: form.locationId,
+          reportLedgerDue: true,
+        }).unwrap();
+      } catch {
+        showToast('Could not prepare ledger due for report', '⚠');
+      }
+    };
+
+    if (kind === 'pos') {
+      await prepLedgerDue();
+      // BR2 ShowReportPOSNew → InvoiceReportWithSalesOrderPOS (PDF).
+      // Vibe opens a same-origin print shell that embeds the PDF and calls window.print()
+      // (cross-origin iframe.print() is blocked when Vibe is on 8081 / BR2 on 8080).
+      const br2 = openBr2InvoiceReportWithSalesOrderPOS(invoiceNo);
+      if (!br2.ok) {
+        invoicePosPrintWinRef.current = window.open('', '_blank', 'width=620,height=880');
+        setInvoicePosAutoPrint(true);
+        setInvoicePosModalOpen(true);
+        showToast(br2.error ?? 'BR2 report popup blocked — printing Vibe invoice instead', '⚠');
+      }
+      return;
+    }
+
+    // Report → open blank sync (keep click gesture), prep dues, then navigate to BR2 viewer.
+    const features =
+      `width=${screen.width},height=${screen.height},fullscreen=no,toolbar=no,status=no,menubar=no,scrollbars=Yes,resizable=no,directories=no,location=no`;
+    const win = window.open('', '_blank', features);
+    if (!win) {
+      showToast('Popup was blocked. Allow popups for this site.', '⚠');
+      return;
+    }
+    try {
+      win.document.open();
+      win.document.write(
+        '<!DOCTYPE html><html><body style="font:14px sans-serif;padding:24px;">Preparing invoice report…</body></html>',
+      );
+      win.document.close();
+    } catch {
+      /* ignore */
+    }
+    await prepLedgerDue();
+    const result = openBr2InvoiceReportWithSalesOrder(invoiceNo, { targetWindow: win });
+    if (!result.ok) showToast(result.error ?? 'Could not open invoice report', '⚠');
+  }, [form.invoiceNo, form.salesOrderId, form.locationId, getInvoicePrintContext, showToast]);
+
+  const openCashMemoReport = useCallback(async () => {
+    const invoiceNo = form.invoiceNo.trim();
+    if (!invoiceNo || !form.salesOrderId) {
+      showToast('Load a saved invoice first, then open cash memo', '⚠');
+      return;
+    }
+
+    const features =
+      `width=${screen.width},height=${screen.height},fullscreen=no,toolbar=no,status=no,menubar=no,scrollbars=Yes,resizable=no,directories=no,location=no`;
+    const win = window.open('', '_blank', features);
+    if (!win) {
+      showToast('Popup was blocked. Allow popups for this site.', '⚠');
+      return;
+    }
+    try {
+      win.document.open();
+      win.document.write(
+        '<!DOCTYPE html><html><body style="font:14px sans-serif;padding:24px;">Preparing cash memo…</body></html>',
+      );
+      win.document.close();
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      await getInvoicePrintContext({
+        invoiceNo,
+        companyId: posSession.companyId,
+        locationId: form.locationId,
+        reportLedgerDue: true,
+      }).unwrap();
+    } catch {
+      showToast('Could not prepare ledger due for cash memo', '⚠');
+    }
+
+    // Cash Memo → BR2 Crystal InvoiceSummary_CashMemo.rpt (CashMemoReport)
+    const result = openBr2CashMemoReport(invoiceNo, { targetWindow: win });
+    if (!result.ok) showToast(result.error ?? 'Could not open cash memo', '⚠');
+  }, [form.invoiceNo, form.salesOrderId, form.locationId, getInvoicePrintContext, showToast]);
+
+  const openDeliveryChallanReport = useCallback(() => {
+    // Temporarily disabled — keep BR2 wiring below so restore is one-step.
+    showToast('Not implemented', 'ℹ');
+    return;
+
+    // --- restore Challan: uncomment return above and keep this body ---
+    const invoiceNo = form.invoiceNo.trim();
+    if (!invoiceNo || !form.salesOrderId) {
+      showToast('Load a saved invoice first, then open challan', '⚠');
+      return;
+    }
+    // Challan → BR2 Crystal IndividualDeliveryChallan.rpt
+    const result = openBr2IndividualDeliveryChallan(invoiceNo);
+    if (!result.ok) showToast(result.error ?? 'Could not open delivery challan', '⚠');
   }, [form.invoiceNo, form.salesOrderId, showToast]);
 
   return (
@@ -2266,7 +2381,8 @@ export function PosPage() {
               onHold={() => void handleHoldInvoice()}
               onClear={onClearAll}
               onReport={() => openInvoicePrint('report')}
-              onChallan={() => setChallanModalOpen(true)}
+              onCashMemo={openCashMemoReport}
+              onChallan={openDeliveryChallanReport}
               onExchange={() => {
                 if (isInvoiceReadOnly) return;
                 setExchangeModalOpen(true);
@@ -2402,8 +2518,17 @@ export function PosPage() {
 
       <InvoicePosPrintModal
         open={invoicePosModalOpen}
-        onClose={() => setInvoicePosModalOpen(false)}
+        onClose={() => {
+          setInvoicePosModalOpen(false);
+          setInvoicePosAutoPrint(false);
+          if (invoicePosPrintWinRef.current && !invoicePosPrintWinRef.current.closed) {
+            try { invoicePosPrintWinRef.current.close(); } catch { /* ignore */ }
+          }
+          invoicePosPrintWinRef.current = null;
+        }}
         salesPersonName={selectedSalesPerson?.name ?? '—'}
+        autoPrint={invoicePosAutoPrint}
+        printTargetWindowRef={invoicePosPrintWinRef}
       />
 
       <InvoiceReportModal
