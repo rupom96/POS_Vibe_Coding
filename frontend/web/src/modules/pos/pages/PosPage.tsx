@@ -15,6 +15,7 @@ import { getLoginSession, posSession } from '../../../config/posSession';
 import {
   openBr2InvoiceReportWithSalesOrder,
   openBr2InvoiceReportWithSalesOrderPOS,
+  openBr2CashMemoReport,
   openBr2IndividualDeliveryChallan,
 } from '../utils/openBr2InvoiceReport';
 import { InvoicePosPrintModal } from '../components/modals/InvoicePosPrintModal';
@@ -55,6 +56,7 @@ import {
   useLazyMultiScanQuery,
   useLazySearchMultiScanQuery,
   useLazyGetInvoiceQuery,
+  useLazyGetInvoicePrintContextQuery,
   useLazySearchInvoicesQuery,
   useSaveInvoiceMutation,
 } from '../api/posApi';
@@ -291,6 +293,7 @@ export function PosPage() {
   const [saveInvoice, { isLoading: saving }] = useSaveInvoiceMutation();
   const [searchInvoices, { data: invoiceOptions = [] }] = useLazySearchInvoicesQuery();
   const [getInvoice] = useLazyGetInvoiceQuery();
+  const [getInvoicePrintContext] = useLazyGetInvoicePrintContextQuery();
   const [createCustomer, { isLoading: creatingCustomer }] = useCreateCustomerMutation();
 
   const [scanModalOpen, setScanModalOpen] = useState(false);
@@ -1846,13 +1849,30 @@ export function PosPage() {
   const lines = form.lines;
   const serialLine = lines.find((l) => l.id === serialLineId);
 
-  const openInvoicePrint = useCallback((kind: 'pos' | 'report') => {
+  const openInvoicePrint = useCallback(async (kind: 'pos' | 'report') => {
     const invoiceNo = form.invoiceNo.trim();
     if (!invoiceNo || !form.salesOrderId) {
       showToast('Load a saved invoice first, then print', '⚠');
       return;
     }
+
+    // Same as BR2 Reports()/ShowReportPOSNew → GetInvoiceReport() → SP_PosSalesLedgerDue
+    // Must run before ReportViewer so InvoiceSummary_SMART*.rpt dues fields populate.
+    const prepLedgerDue = async () => {
+      try {
+        await getInvoicePrintContext({
+          invoiceNo,
+          companyId: posSession.companyId,
+          locationId: form.locationId,
+          reportLedgerDue: true,
+        }).unwrap();
+      } catch {
+        showToast('Could not prepare ledger due for report', '⚠');
+      }
+    };
+
     if (kind === 'pos') {
+      await prepLedgerDue();
       // BR2 ShowReportPOSNew → InvoiceReportWithSalesOrderPOS (PDF).
       // Vibe opens a same-origin print shell that embeds the PDF and calls window.print()
       // (cross-origin iframe.print() is blocked when Vibe is on 8081 / BR2 on 8080).
@@ -1865,10 +1885,68 @@ export function PosPage() {
       }
       return;
     }
-    // Report → BR2 Crystal InvoiceSummary_SMART.rpt (InvoiceReportWithSalesOrder)
-    const result = openBr2InvoiceReportWithSalesOrder(invoiceNo);
+
+    // Report → open blank sync (keep click gesture), prep dues, then navigate to BR2 viewer.
+    const features =
+      `width=${screen.width},height=${screen.height},fullscreen=no,toolbar=no,status=no,menubar=no,scrollbars=Yes,resizable=no,directories=no,location=no`;
+    const win = window.open('', '_blank', features);
+    if (!win) {
+      showToast('Popup was blocked. Allow popups for this site.', '⚠');
+      return;
+    }
+    try {
+      win.document.open();
+      win.document.write(
+        '<!DOCTYPE html><html><body style="font:14px sans-serif;padding:24px;">Preparing invoice report…</body></html>',
+      );
+      win.document.close();
+    } catch {
+      /* ignore */
+    }
+    await prepLedgerDue();
+    const result = openBr2InvoiceReportWithSalesOrder(invoiceNo, { targetWindow: win });
     if (!result.ok) showToast(result.error ?? 'Could not open invoice report', '⚠');
-  }, [form.invoiceNo, form.salesOrderId, showToast]);
+  }, [form.invoiceNo, form.salesOrderId, form.locationId, getInvoicePrintContext, showToast]);
+
+  const openCashMemoReport = useCallback(async () => {
+    const invoiceNo = form.invoiceNo.trim();
+    if (!invoiceNo || !form.salesOrderId) {
+      showToast('Load a saved invoice first, then open cash memo', '⚠');
+      return;
+    }
+
+    const features =
+      `width=${screen.width},height=${screen.height},fullscreen=no,toolbar=no,status=no,menubar=no,scrollbars=Yes,resizable=no,directories=no,location=no`;
+    const win = window.open('', '_blank', features);
+    if (!win) {
+      showToast('Popup was blocked. Allow popups for this site.', '⚠');
+      return;
+    }
+    try {
+      win.document.open();
+      win.document.write(
+        '<!DOCTYPE html><html><body style="font:14px sans-serif;padding:24px;">Preparing cash memo…</body></html>',
+      );
+      win.document.close();
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      await getInvoicePrintContext({
+        invoiceNo,
+        companyId: posSession.companyId,
+        locationId: form.locationId,
+        reportLedgerDue: true,
+      }).unwrap();
+    } catch {
+      showToast('Could not prepare ledger due for cash memo', '⚠');
+    }
+
+    // Cash Memo → BR2 Crystal InvoiceSummary_CashMemo.rpt (CashMemoReport)
+    const result = openBr2CashMemoReport(invoiceNo, { targetWindow: win });
+    if (!result.ok) showToast(result.error ?? 'Could not open cash memo', '⚠');
+  }, [form.invoiceNo, form.salesOrderId, form.locationId, getInvoicePrintContext, showToast]);
 
   const openDeliveryChallanReport = useCallback(() => {
     // Temporarily disabled — keep BR2 wiring below so restore is one-step.
@@ -2303,6 +2381,7 @@ export function PosPage() {
               onHold={() => void handleHoldInvoice()}
               onClear={onClearAll}
               onReport={() => openInvoicePrint('report')}
+              onCashMemo={openCashMemoReport}
               onChallan={openDeliveryChallanReport}
               onExchange={() => {
                 if (isInvoiceReadOnly) return;

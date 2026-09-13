@@ -12,7 +12,7 @@ function openBr2ReportViewer(
   reportName: string,
   filterOrKey: string,
   parameter?: string,
-  options?: { autoPrint?: boolean },
+  options?: { autoPrint?: boolean; targetWindow?: Window | null },
 ): { ok: boolean; error?: string } {
   const base = getBr2ReportBaseUrl();
   if (!base) {
@@ -31,6 +31,19 @@ function openBr2ReportViewer(
 
   const features =
     `width=${screen.width},height=${screen.height},fullscreen=no,toolbar=no,status=no,menubar=no,scrollbars=Yes,resizable=no,directories=no,location=no`;
+
+  // Prefer a window opened synchronously on click (survives await before navigate).
+  const existing = options?.targetWindow && !options.targetWindow.closed ? options.targetWindow : null;
+  if (existing) {
+    existing.location.href = url;
+    try {
+      existing.focus();
+    } catch {
+      /* ignore */
+    }
+    return { ok: true };
+  }
+
   const win = window.open(url, '', features);
   if (!win) {
     return { ok: false, error: 'Popup was blocked. Allow popups for this site.' };
@@ -45,7 +58,10 @@ function openBr2ReportViewer(
  * BR2 items shape:
  *   InvoiceReportWithSalesOrder,{SalesOrder.InvoiceNo}='…',UserNameDBZDBZCompanyName
  */
-export function openBr2InvoiceReportWithSalesOrder(invoiceNo: string): {
+export function openBr2InvoiceReportWithSalesOrder(
+  invoiceNo: string,
+  options?: { targetWindow?: Window | null },
+): {
   ok: boolean;
   error?: string;
 } {
@@ -58,6 +74,35 @@ export function openBr2InvoiceReportWithSalesOrder(invoiceNo: string): {
     'InvoiceReportWithSalesOrder',
     `{SalesOrder.InvoiceNo}='${trimmed}'`,
     buildBr2ReportParameter(),
+    options,
+  );
+}
+
+/**
+ * Opens BR2 Crystal ReportViewer for InvoiceSummary_CashMemo.rpt
+ * via report key CashMemoReport (PosSales Cash Memo → Reports('btnReportCashMemo')).
+ *
+ * BR2 items shape (SingleInvoice=False path):
+ *   CashMemoReport,{SalesOrder.InvoiceNo}='…',UserName
+ */
+export function openBr2CashMemoReport(
+  invoiceNo: string,
+  options?: { targetWindow?: Window | null },
+): {
+  ok: boolean;
+  error?: string;
+} {
+  const trimmed = invoiceNo.trim();
+  if (!trimmed) {
+    return { ok: false, error: 'Invoice number is required.' };
+  }
+
+  const userName = getLoginSession().securityUserName?.trim() || '';
+  return openBr2ReportViewer(
+    'CashMemoReport',
+    `{SalesOrder.InvoiceNo}='${trimmed}'`,
+    userName,
+    options,
   );
 }
 

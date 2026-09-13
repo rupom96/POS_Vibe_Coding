@@ -6,6 +6,7 @@ export function ActionsPanel({
   onHold,
   onClear,
   onReport,
+  onCashMemo,
   onChallan,
   onExchange,
   onMore,
@@ -18,6 +19,7 @@ export function ActionsPanel({
   onHold: () => void;
   onClear: () => void;
   onReport: () => void;
+  onCashMemo: () => void;
   onChallan: () => void;
   onExchange: () => void;
   onMore: () => void;
@@ -38,6 +40,10 @@ export function ActionsPanel({
         <button type="button" className="ab" onClick={onReport}>
           <span className="ai">📊</span>
           <span className="al">Report</span>
+        </button>
+        <button type="button" className="ab" onClick={onCashMemo}>
+          <span className="ai">🧾</span>
+          <span className="al">Cash Memo</span>
         </button>
         <button type="button" className="ab" onClick={onChallan}>
           <span className="ai">📄</span>
