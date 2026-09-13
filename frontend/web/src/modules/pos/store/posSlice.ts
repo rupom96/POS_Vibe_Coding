@@ -16,6 +16,8 @@ export interface CreateCustomerRequest {
   companyId?: number;
   locationId?: number;
   entryBy?: number;
+  /** When true and POSCustomerCombined is on, also create a linked Supplier. */
+  combineAsSupplier?: boolean;
 }
 
 export type InvoiceDiscountType = 'Amount' | 'Percentage';

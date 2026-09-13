@@ -231,6 +231,8 @@ export function PosPage() {
   const posMultiplePriceSales = posFeatures?.posMultiplePriceSales === true;
   const canViewProductCost = posFeatures?.canViewProductCost === true;
   const restrictedPaymentModeInPos = posFeatures?.restrictedPaymentModeInPos === true;
+  const posCustomerCombined = posFeatures?.posCustomerCombined === true;
+  const addedBuyerAddressInCache = posFeatures?.addedBuyerAddressInCache === true;
   /** Avoid duplicate preferred-payment-mode calls per buyer (incl. when features load after pick). */
   const preferredModeBuyerRef = useRef<number | null>(null);
   /** Last preferred-payment-mode API result for the current buyer. */
@@ -730,6 +732,8 @@ export function PosPage() {
             quantity: 0,
             serials: [],
             hasPriceSetup: product.hasPriceSetup === true,
+            vatPercent: Number(product.vatPercent) || 0,
+            taxPercent: Number(product.taxPercent) || 0,
           },
         }),
       );
@@ -2024,6 +2028,7 @@ export function PosPage() {
                     refreshKey={customerListRefresh}
                     selectedBuyerId={form.buyerId}
                     disabled={isInvoiceReadOnly}
+                    showAddressAndCode={addedBuyerAddressInCache}
                     onCommit={onCustomerNameCommit}
                     onSelect={selectCustomer}
                     onHoverEnter={(rect) => {
@@ -2043,6 +2048,7 @@ export function PosPage() {
                       refreshKey={customerListRefresh}
                       selectedBuyerId={form.buyerId}
                       disabled={isInvoiceReadOnly}
+                      showAddressAndCode={addedBuyerAddressInCache}
                       onCommit={onMobileCommit}
                       onSelect={selectCustomer}
                     />
@@ -2056,6 +2062,7 @@ export function PosPage() {
                       refreshKey={customerListRefresh}
                       selectedBuyerId={form.buyerId}
                       disabled={isInvoiceReadOnly}
+                      showAddressAndCode={addedBuyerAddressInCache}
                       onCommit={onCustomerCodeCommit}
                       onSelect={selectCustomer}
                     />
@@ -2424,6 +2431,7 @@ export function PosPage() {
         onClose={() => setCustomerModalOpen(false)}
         saving={creatingCustomer}
         companyId={posSession.companyId}
+        posCustomerCombined={posCustomerCombined}
         onSave={async (data) => {
           const customer = await createCustomer({
             ...data,

@@ -27,7 +27,7 @@ internal static class PartyCodeGenerator
                 DocumentDate: documentDate ?? DateTime.Now));
 
     /// <summary>
-    /// Ready for supplier create flows; not used by current POS UI.
+    /// Supplier numbering via Bizness Event "Supplier" / SupplierNo (same path as BuyerNo).
     /// </summary>
     public static Task<string> GenerateSupplierCodeAsync(
         IDbConnection conn,

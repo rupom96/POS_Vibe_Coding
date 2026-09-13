@@ -35,7 +35,8 @@ public record CreateCustomerRequest(
     long? GroupId,
     long? CompanyId,
     long? LocationId,
-    long? EntryBy);
+    long? EntryBy,
+    bool CombineAsSupplier = false);
 
 public class BuyerPreferredPaymentModeDto
 {

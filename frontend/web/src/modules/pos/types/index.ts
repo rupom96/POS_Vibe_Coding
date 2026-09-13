@@ -90,6 +90,12 @@ export interface PosFeatureFlags {
   canViewProductCost: boolean;
   /** When true, pay mode comes from Buyer_AgreementCredit.PreferredPaymentModeId for the selected customer. */
   restrictedPaymentModeInPos: boolean;
+  /** When true, Customer Setup can also create a linked Supplier (Combine as Supplier). */
+  posCustomerCombined: boolean;
+  /** When true, product select loads preferred VAT%/TAX% from ProductTax. */
+  vatTaxInPos: boolean;
+  /** When true, buyer autocomplete options show Address and Code. */
+  addedBuyerAddressInCache: boolean;
 }
 
 export interface BuyerPreferredPaymentMode {
@@ -187,6 +193,10 @@ export interface ProductDetail {
   hasCurrentStock?: boolean;
   productType?: string;
   hasPriceSetup: boolean;
+  /** Preferred VAT % from ProductTax when VATTaxInPos is on. */
+  vatPercent?: number;
+  /** Preferred TAX % from ProductTax when VATTaxInPos is on. */
+  taxPercent?: number;
 }
 
 export interface PriceHistoryItem {

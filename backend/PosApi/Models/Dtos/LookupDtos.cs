@@ -46,6 +46,9 @@ public class PosFeatureFlagsDto
     public bool PosMultiplePriceSales { get; set; }
     public bool CanViewProductCost { get; set; }
     public bool RestrictedPaymentModeInPos { get; set; }
+    public bool PosCustomerCombined { get; set; }
+    public bool VatTaxInPos { get; set; }
+    public bool AddedBuyerAddressInCache { get; set; }
 }
 
 public class BankExpenseChargeDto

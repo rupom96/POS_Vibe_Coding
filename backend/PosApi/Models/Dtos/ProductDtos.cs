@@ -29,6 +29,10 @@ public class ProductDetailDto
     public bool HasCurrentStock { get; set; }
     public string? ProductType { get; set; }
     public bool HasPriceSetup { get; set; }
+    /** Preferred VAT % from ProductTax when VATTaxInPos is on; else 0. */
+    public decimal VatPercent { get; set; }
+    /** Preferred TAX % from ProductTax when VATTaxInPos is on; else 0. */
+    public decimal TaxPercent { get; set; }
 }
 
 public class PriceHistoryItemDto

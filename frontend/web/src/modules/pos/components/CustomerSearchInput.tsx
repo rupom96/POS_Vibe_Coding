@@ -26,14 +26,31 @@ function optionTitle(customer: CustomerSearchResult, variant: CustomerSearchVari
   return customer.buyerName ?? customer.name ?? '—';
 }
 
-function optionMeta(customer: CustomerSearchResult, variant: CustomerSearchVariant) {
+function optionMeta(
+  customer: CustomerSearchResult,
+  variant: CustomerSearchVariant,
+  showAddressAndCode: boolean,
+) {
   if (variant === 'code') {
-    return [customer.buyerName ?? customer.name, customer.phone].filter(Boolean).join(' · ') || '—';
+    const parts = [customer.buyerName ?? customer.name, customer.phone];
+    if (showAddressAndCode && customer.address) parts.push(customer.address);
+    return parts.filter(Boolean).join(' · ') || '—';
   }
   if (variant === 'phone') {
-    return [customer.phone, customer.address].filter(Boolean).join(' · ') || '—';
+    const parts = [customer.phone];
+    if (showAddressAndCode) {
+      if (customer.code) parts.push(customer.code);
+      if (customer.address) parts.push(customer.address);
+    }
+    return parts.filter(Boolean).join(' · ') || '—';
   }
-  return [customer.phone, customer.address].filter(Boolean).join(' · ') || '—';
+  // name variant: phone always; code + address only when feature is on
+  const parts = [customer.phone];
+  if (showAddressAndCode) {
+    if (customer.code) parts.push(customer.code);
+    if (customer.address) parts.push(customer.address);
+  }
+  return parts.filter(Boolean).join(' · ') || '—';
 }
 
 export const CustomerSearchInput = memo(function CustomerSearchInput({
@@ -43,6 +60,7 @@ export const CustomerSearchInput = memo(function CustomerSearchInput({
   refreshKey,
   selectedBuyerId,
   disabled = false,
+  showAddressAndCode = false,
   onCommit,
   onSelect,
   onHoverEnter,
@@ -54,6 +72,8 @@ export const CustomerSearchInput = memo(function CustomerSearchInput({
   refreshKey?: number;
   selectedBuyerId?: number;
   disabled?: boolean;
+  /** When true (AddedBuyerAddressInCache), option meta includes Code + Address. */
+  showAddressAndCode?: boolean;
   onCommit: (value: string) => void;
   onSelect: (customer: CustomerSearchResult) => void;
   onHoverEnter?: (rect: DOMRect) => void;
@@ -263,7 +283,7 @@ export const CustomerSearchInput = memo(function CustomerSearchInput({
             onClick={() => pick(c)}
           >
             <span className="cust-ac-name">{optionTitle(c, variant)}</span>
-            <span className="cust-ac-meta">{optionMeta(c, variant)}</span>
+            <span className="cust-ac-meta">{optionMeta(c, variant, showAddressAndCode)}</span>
             {(c.employeeName) && (
               <span className="cust-ac-emp">{c.employeeName}</span>
             )}

@@ -180,11 +180,59 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
 
         try
         {
-            await EnsureUniquePhoneAsync(conn, tx, companyId, normalizedPhone);
+            await EnsureUniqueBuyerPhoneAsync(conn, tx, companyId, normalizedPhone);
 
             var openingDate = await GetCompanyOpeningDateAsync(conn, tx, companyId);
 
-            // Never auto-combine with supplier / existing parties on POS create (TC-03).
+            var combineAsSupplier = request.CombineAsSupplier
+                && await IsFeatureAllowedAsync(conn, tx, companyId, "POSCustomerCombined");
+
+            long? supplierId = null;
+            if (combineAsSupplier)
+            {
+                await EnsureUniqueSupplierPhoneAsync(conn, tx, companyId, normalizedPhone);
+
+                var supplierCode = await PartyCodeGenerator.GenerateSupplierCodeAsync(
+                    conn, tx, companyId, locationId, employeeId, entryBy);
+
+                var supplierGroupId = await ResolveOrCreateSupplierGroupAsync(
+                    conn, tx, companyId, groupId, entryBy);
+
+                var countryId = await conn.ExecuteScalarAsync<long?>(
+                    "SELECT TOP 1 CountryId FROM Country ORDER BY CountryId",
+                    transaction: tx);
+
+                supplierId = await conn.ExecuteScalarAsync<long>(
+                    """
+                    INSERT INTO Supplier (
+                        GroupId, Code, Initial, Name, Address, BusinessAddress1, CountryId,
+                        Phone, DateofEntry, OpeningDate, OpeningBalance,
+                        LocationId, CompanyId, Active, EntryBy
+                    )
+                    OUTPUT INSERTED.SupplierId
+                    VALUES (
+                        @GroupId, @Code, @Initial, @Name, @Address, '.', @CountryId,
+                        @Phone, GETDATE(), @OpeningDate, 0,
+                        @LocationId, @CompanyId, 'Y', @EntryBy
+                    )
+                    """,
+                    new
+                    {
+                        GroupId = supplierGroupId,
+                        Code = supplierCode,
+                        Initial = initial,
+                        Name = name,
+                        Address = address,
+                        CountryId = countryId,
+                        Phone = phone,
+                        OpeningDate = openingDate,
+                        LocationId = locationId,
+                        CompanyId = companyId,
+                        EntryBy = entryBy,
+                    },
+                    tx);
+            }
+
             var buyerCode = await PartyCodeGenerator.GenerateBuyerCodeAsync(
                 conn, tx, companyId, locationId, employeeId, entryBy);
 
@@ -197,7 +245,7 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
                 OUTPUT INSERTED.BuyerId
                 VALUES (
                     @CompanyId, @LocationId, @Code, @GroupId, @Initial, @Name, @Phone, @Address, @Remarks,
-                    1, 0, GETDATE(), @EntryBy, @EmployeeId, NULL
+                    1, @Combind, GETDATE(), @EntryBy, @EmployeeId, @SupplierId
                 )
                 """,
                 new
@@ -211,8 +259,10 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
                     Phone = phone,
                     Address = address,
                     Remarks = remarks,
+                    Combind = combineAsSupplier ? 1 : 0,
                     EntryBy = entryBy,
                     EmployeeId = employeeId,
+                    SupplierId = supplierId,
                 },
                 tx);
 
@@ -263,7 +313,7 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
         return openingDate.Value;
     }
 
-    private static async Task EnsureUniquePhoneAsync(
+    private static async Task EnsureUniqueBuyerPhoneAsync(
         IDbConnection conn,
         IDbTransaction tx,
         long companyId,
@@ -283,6 +333,119 @@ public class CustomerService(IDbConnectionFactory db) : ICustomerService
 
         if (phones.Any(phone => BuyerNormalization.NormalizePhone(phone) == normalizedPhone))
             throw new DuplicateBuyerException("A customer with this mobile number already exists.");
+    }
+
+    private static async Task EnsureUniqueSupplierPhoneAsync(
+        IDbConnection conn,
+        IDbTransaction tx,
+        long companyId,
+        string normalizedPhone)
+    {
+        var phones = await conn.QueryAsync<string?>(
+            """
+            SELECT s.Phone
+            FROM Supplier s
+            WHERE s.CompanyId = @CompanyId
+              AND s.Phone IS NOT NULL
+              AND UPPER(LTRIM(RTRIM(CONVERT(varchar(10), s.Active)))) IN ('Y', '1', 'TRUE')
+            """,
+            new { CompanyId = companyId },
+            tx);
+
+        if (phones.Any(phone => BuyerNormalization.NormalizePhone(phone) == normalizedPhone))
+            throw new DuplicateBuyerException("A supplier with this mobile number already exists.");
+    }
+
+    /// <summary>
+    /// BR2 combine: match SupplierGroup by BuyerGroup.Name (same company); create if missing.
+    /// </summary>
+    private static async Task<long> ResolveOrCreateSupplierGroupAsync(
+        IDbConnection conn,
+        IDbTransaction tx,
+        long companyId,
+        long buyerGroupId,
+        long entryBy)
+    {
+        var buyerGroup = await conn.QueryFirstOrDefaultAsync<(string? Name, string? Code)>(
+            """
+            SELECT TOP 1 Name, Code
+            FROM BuyerGroup
+            WHERE BuyerGroupId = @BuyerGroupId
+            """,
+            new { BuyerGroupId = buyerGroupId },
+            tx);
+
+        if (string.IsNullOrWhiteSpace(buyerGroup.Name))
+            throw new InvalidOperationException("Buyer group is required to combine as supplier.");
+
+        var groupName = buyerGroup.Name.Trim();
+        var existingId = await conn.ExecuteScalarAsync<long?>(
+            """
+            SELECT TOP 1 SupplierGroupId
+            FROM SupplierGroup
+            WHERE CompanyId = @CompanyId
+              AND LTRIM(RTRIM(Name)) = @Name
+            ORDER BY SupplierGroupId
+            """,
+            new { CompanyId = companyId, Name = groupName },
+            tx);
+
+        if (existingId is > 0)
+            return existingId.Value;
+
+        return await conn.ExecuteScalarAsync<long>(
+            """
+            INSERT INTO SupplierGroup (Code, Name, CompanyId, DateOfEntry, EntryBy)
+            OUTPUT INSERTED.SupplierGroupId
+            VALUES (@Code, @Name, @CompanyId, GETDATE(), @EntryBy)
+            """,
+            new
+            {
+                Code = string.IsNullOrWhiteSpace(buyerGroup.Code) ? null : buyerGroup.Code.Trim(),
+                Name = groupName,
+                CompanyId = companyId,
+                EntryBy = entryBy,
+            },
+            tx);
+    }
+
+    private static async Task<bool> IsFeatureAllowedAsync(
+        IDbConnection conn,
+        IDbTransaction tx,
+        long companyId,
+        string featureName)
+    {
+        var raw = await conn.ExecuteScalarAsync<object?>(
+            """
+            SELECT TOP 1 IsAllowed
+            FROM BRFeature
+            WHERE Name = @Name AND (CompanyId = @CompanyId OR CompanyId IS NULL)
+            ORDER BY CASE WHEN CompanyId = @CompanyId THEN 0 ELSE 1 END
+            """,
+            new { Name = featureName, CompanyId = companyId },
+            tx);
+
+        if (raw is null || raw is DBNull)
+            return false;
+        if (raw is bool b)
+            return b;
+        if (raw is byte by)
+            return by != 0;
+        if (raw is short s)
+            return s != 0;
+        if (raw is int i)
+            return i != 0;
+        if (raw is long l)
+            return l != 0;
+
+        var text = Convert.ToString(raw)?.Trim();
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        return text.Equals("Y", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("Yes", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("1", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task<decimal> GetLedgerDueAsync(long buyerId, long? userId = null)

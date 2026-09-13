@@ -10,6 +10,7 @@ const EMPTY_FORM: CreateCustomerRequest = {
   address: '',
   remarks: '',
   groupId: undefined,
+  combineAsSupplier: true,
 };
 
 type FieldErrors = {
@@ -46,12 +47,15 @@ export function CustomerSetupModal({
   onSave,
   saving,
   companyId,
+  posCustomerCombined = false,
 }: {
   open: boolean;
   onClose: () => void;
   onSave: (data: CreateCustomerRequest) => Promise<void> | void;
   saving: boolean;
   companyId: number;
+  /** When true, show "Combine as Supplier" under Remarks (default checked). */
+  posCustomerCombined?: boolean;
 }) {
   const [form, setForm] = useState<CreateCustomerRequest>(EMPTY_FORM);
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -72,11 +76,15 @@ export function CustomerSetupModal({
   const groupRef = useRef<HTMLSelectElement>(null);
   const addressRef = useRef<HTMLInputElement>(null);
   const remarksRef = useRef<HTMLTextAreaElement>(null);
+  const combineRef = useRef<HTMLInputElement>(null);
   const saveBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    setForm(EMPTY_FORM);
+    setForm({
+      ...EMPTY_FORM,
+      combineAsSupplier: posCustomerCombined,
+    });
     setErrors({});
     setSubmitting(false);
     // Focus Customer Name when the modal opens.
@@ -85,7 +93,7 @@ export function CustomerSetupModal({
       nameRef.current?.select();
     }, 0);
     return () => window.clearTimeout(id);
-  }, [open]);
+  }, [open, posCustomerCombined]);
 
   // Default Buyer Group to "Retail" when groups load / modal opens.
   useEffect(() => {
@@ -125,6 +133,7 @@ export function CustomerSetupModal({
         address: form.address?.trim() ?? '',
         remarks: form.remarks?.trim() ?? '',
         groupId: resolvedGroupId,
+        combineAsSupplier: posCustomerCombined ? form.combineAsSupplier === true : false,
       });
     } catch (err) {
       setErrors((prev) => ({
@@ -252,12 +261,32 @@ export function CustomerSetupModal({
               disabled={busy}
               onChange={(e) => setForm({ ...form, remarks: e.target.value })}
               onKeyDown={(e) => {
-                // Enter: move to Save (not insert newline / not auto-submit).
+                // Enter: move to checkbox (if shown) or Save.
                 if (e.key === 'Enter' && !e.shiftKey) {
-                  focusNextOnEnter(e, () => saveBtnRef.current?.focus());
+                  focusNextOnEnter(e, () => {
+                    if (posCustomerCombined) combineRef.current?.focus();
+                    else saveBtnRef.current?.focus();
+                  });
                 }
               }}
             />
+
+            {posCustomerCombined && (
+              <>
+                <span className="cs-label" aria-hidden="true" />
+                <label className="cs-combine">
+                  <input
+                    ref={combineRef}
+                    type="checkbox"
+                    checked={form.combineAsSupplier === true}
+                    disabled={busy}
+                    onChange={(e) => setForm({ ...form, combineAsSupplier: e.target.checked })}
+                    onKeyDown={(e) => focusNextOnEnter(e, () => saveBtnRef.current?.focus())}
+                  />
+                  Combine as Supplier
+                </label>
+              </>
+            )}
           </div>
         </div>
         <div className="mf">

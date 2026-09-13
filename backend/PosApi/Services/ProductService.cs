@@ -164,7 +164,105 @@ public class ProductService(IDbConnectionFactory db) : IProductService
             """;
 
         using var conn = db.CreateConnection();
-        return await conn.QueryFirstOrDefaultAsync<ProductDetailDto>(sql, new { ProductId = productId, LocationId = locationId, CompanyId = companyId });
+        var detail = await conn.QueryFirstOrDefaultAsync<ProductDetailDto>(sql, new { ProductId = productId, LocationId = locationId, CompanyId = companyId });
+        if (detail is null)
+            return null;
+
+        if (companyId is > 0 && await IsFeatureAllowedAsync(conn, companyId.Value, "VATTaxInPos"))
+            await ApplyProductTaxPercentsAsync(conn, detail);
+
+        return detail;
+    }
+
+    /// <summary>
+    /// BR2 LoadProductTax: Product_Additional.HSCode → ProductTax → Tax.TaxName (VAT / TAX).
+    /// Amount is the rate; Percentage flag means Amount is a percent (else fixed amount → convert via LastPrice).
+    /// </summary>
+    private static async Task ApplyProductTaxPercentsAsync(System.Data.IDbConnection conn, ProductDetailDto detail)
+    {
+        var rows = (await conn.QueryAsync<ProductTaxRow>(
+            """
+            SELECT
+                UPPER(LTRIM(RTRIM(ISNULL(t.TaxName, '')))) AS TaxName,
+                pt.Percentage,
+                CAST(pt.Amount AS decimal(18,6)) AS Amount
+            FROM Product_Additional pa
+            INNER JOIN ProductTax pt ON pt.HSCode = pa.HSCode
+            INNER JOIN Tax t ON t.TaxId = pt.TaxId
+            WHERE pa.ProductId = @ProductId
+            """,
+            new { ProductId = detail.ProductId })).ToList();
+
+        decimal? vatPercent = null;
+        decimal? taxPercent = null;
+
+        foreach (var row in rows)
+        {
+            var name = row.TaxName ?? string.Empty;
+            var isVat = name == "VAT" || name.StartsWith("VAT ", StringComparison.Ordinal);
+            var isTax = name == "TAX" || name.StartsWith("TAX ", StringComparison.Ordinal);
+            if (!isVat && !isTax)
+                continue;
+
+            var percent = ToPreferredPercent(row.Percentage, row.Amount, detail.LastPrice);
+            if (isVat && vatPercent is null)
+                vatPercent = percent;
+            else if (isTax && taxPercent is null)
+                taxPercent = percent;
+        }
+
+        detail.VatPercent = vatPercent ?? 0m;
+        detail.TaxPercent = taxPercent ?? 0m;
+    }
+
+    private static decimal ToPreferredPercent(bool isPercentage, decimal amount, decimal lastPrice)
+    {
+        if (isPercentage)
+            return Math.Round(amount, 4);
+        if (lastPrice > 0)
+            return Math.Round(amount / lastPrice * 100m, 4);
+        return 0m;
+    }
+
+    private static async Task<bool> IsFeatureAllowedAsync(System.Data.IDbConnection conn, long companyId, string featureName)
+    {
+        var raw = await conn.ExecuteScalarAsync<object?>(
+            """
+            SELECT TOP 1 IsAllowed
+            FROM BRFeature
+            WHERE Name = @Name AND (CompanyId = @CompanyId OR CompanyId IS NULL)
+            ORDER BY CASE WHEN CompanyId = @CompanyId THEN 0 ELSE 1 END
+            """,
+            new { Name = featureName, CompanyId = companyId });
+
+        if (raw is null || raw is DBNull)
+            return false;
+        if (raw is bool b)
+            return b;
+        if (raw is byte by)
+            return by != 0;
+        if (raw is short s)
+            return s != 0;
+        if (raw is int i)
+            return i != 0;
+        if (raw is long l)
+            return l != 0;
+
+        var text = Convert.ToString(raw)?.Trim();
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        return text.Equals("Y", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("Yes", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("1", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class ProductTaxRow
+    {
+        public string? TaxName { get; set; }
+        public bool Percentage { get; set; }
+        public decimal Amount { get; set; }
     }
 
     public async Task<ProductDetailDto?> GetByBarcodeOrNameAsync(string term, long? locationId, long? companyId = null)
